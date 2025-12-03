@@ -1,0 +1,5 @@
+.cast-highlight-clickable {
+  outline: 2px solid #00eaff !important;
+  outline-offset: 1px;
+  transition: outline 0.15s ease;
+}

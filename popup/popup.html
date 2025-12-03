@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>CAST 3.2</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      
+      body {
+        background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);
+        color: #ffffff;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+        width: 400px;
+        padding: 0;
+        margin: 0;
+        line-height: 1.5;
+      }
+      
+      .container {
+        padding: 24px;
+      }
+      
+      h2 {
+        margin: 0 0 24px;
+        font-size: 24px;
+        font-weight: 700;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        letter-spacing: -0.5px;
+      }
+      
+      .section {
+        margin-bottom: 20px;
+      }
+      
+      label {
+        font-size: 13px;
+        color: #b0b0b0;
+        display: block;
+        margin-bottom: 8px;
+        font-weight: 500;
+        letter-spacing: 0.2px;
+      }
+      
+      input[type="password"], 
+      input[type="text"], 
+      input[type="number"] {
+        width: 100%;
+        padding: 12px 16px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.05);
+        color: #ffffff;
+        font-size: 14px;
+        margin-bottom: 0;
+        transition: all 0.2s ease;
+        backdrop-filter: blur(10px);
+      }
+      
+      input[type="password"]:focus, 
+      input[type="text"]:focus, 
+      input[type="number"]:focus {
+        outline: none;
+        border-color: #667eea;
+        background: rgba(255, 255, 255, 0.08);
+        box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+      }
+      
+      input::placeholder {
+        color: #666;
+      }
+      
+      button {
+        width: 100%;
+        padding: 14px 20px;
+        margin-bottom: 10px;
+        border-radius: 8px;
+        border: none;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 500;
+        transition: all 0.2s ease;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        letter-spacing: 0.2px;
+      }
+      
+      button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 6px 12px rgba(102, 126, 234, 0.3);
+      }
+      
+      button:active {
+        transform: translateY(0);
+      }
+      
+      button.secondary {
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+      
+      button.secondary:hover {
+        background: rgba(255, 255, 255, 0.12);
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+      }
+      
+      
+      #status {
+        margin-top: 16px;
+        font-size: 13px;
+        color: #a0a0a0;
+        padding: 12px;
+        background: rgba(102, 126, 234, 0.1);
+        border-radius: 8px;
+        border-left: 3px solid #667eea;
+        min-height: 0;
+        display: none;
+      }
+      
+      #status:not(:empty) {
+        display: block;
+      }
+      
+      #reportBox {
+        margin-top: 16px;
+        font-size: 12px;
+        max-height: 240px;
+        overflow: auto;
+        background: rgba(0, 0, 0, 0.3);
+        border-radius: 8px;
+        padding: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        white-space: pre-wrap;
+        line-height: 1.6;
+        backdrop-filter: blur(10px);
+        display: none;
+      }
+      
+      #reportBox:not(:empty) {
+        display: block;
+      }
+      
+      #reportBox::-webkit-scrollbar {
+        width: 8px;
+      }
+      
+      #reportBox::-webkit-scrollbar-track {
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 4px;
+      }
+      
+      #reportBox::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.2);
+        border-radius: 4px;
+      }
+      
+      #reportBox::-webkit-scrollbar-thumb:hover {
+        background: rgba(255, 255, 255, 0.3);
+      }
+      
+      #footer {
+        margin-top: 24px;
+        padding-top: 20px;
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
+        text-align: center;
+        font-size: 12px;
+        color: #888;
+        font-weight: 500;
+      }
+      
+      .input-group {
+        margin-bottom: 16px;
+      }
+      
+      .input-with-indicator {
+        position: relative;
+      }
+      
+      .input-with-indicator input {
+        padding-right: 40px;
+      }
+      
+      .checkmark {
+        position: absolute;
+        right: 12px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: #4ade80;
+        font-size: 18px;
+        font-weight: 600;
+        opacity: 0;
+        transition: opacity 0.2s ease;
+        pointer-events: none;
+      }
+      
+      .checkmark.visible {
+        opacity: 1;
+      }
+      
+      .button-group {
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+        margin-top: 20px;
+      }
+      
+      small {
+        display: block;
+        margin-top: 4px;
+        color: #888;
+        font-size: 11px;
+        line-height: 1.4;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h2>CAST 3.2</h2>
+
+      <div class="section">
+        <div class="input-group">
+          <label for="apiKey">Gemini API Key</label>
+          <div class="input-with-indicator">
+            <input type="password" id="apiKey" placeholder="Paste your Gemini API key" />
+            <span class="checkmark" id="apiKeyCheckmark">✓</span>
+          </div>
+        </div>
+        <div class="input-group">
+          <label for="crawlDepth">Crawl Depth</label>
+          <input type="number" id="crawlDepth" min="0" max="5" value="2" />
+        </div>
+      </div>
+
+      <div class="button-group">
+        <button id="start">Start Full Crawl</button>
+        <button id="runAI">Run AI Analysis</button>
+        <button id="downloadJSON" class="secondary">Download Raw JSON</button>
+      </div>
+
+      <div id="status"></div>
+      <div id="reportBox"></div>
+      <div id="footer">Built with ❤️ by Apply Digital</div>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>
