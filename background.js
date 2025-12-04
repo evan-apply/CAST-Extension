@@ -994,14 +994,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         ).join('\n');
 
         const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-        const url = URL.createObjectURL(blob);
+        const blobUrl = (globalThis.URL || self.URL).createObjectURL(blob);
 
         chrome.downloads.download({
-          url,
+          url: blobUrl,
           filename: "CAST_network_calls.csv",
           saveAs: true
         }, (downloadId) => {
-          setTimeout(() => URL.revokeObjectURL(url), 2000);
+          setTimeout(() => (globalThis.URL || self.URL).revokeObjectURL(blobUrl), 2000);
           if (chrome.runtime.lastError) {
             sendResponse({ error: chrome.runtime.lastError.message });
           } else {
