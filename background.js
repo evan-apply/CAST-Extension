@@ -2,6 +2,7 @@
 importScripts('rag.js');
 
 let maxDepth = 2; // Default depth, can be overridden by user input
+let pageLimit = null; // Optional max pages to visit per crawl
 
 let logs = {};
 let queue = [];
@@ -65,6 +66,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     maxDepth = typeof msg.depth === 'number' && msg.depth >= 0 && msg.depth <= 5 
       ? msg.depth 
       : 2;
+    pageLimit = typeof msg.pageLimit === 'number' && msg.pageLimit > 0 ? msg.pageLimit : null;
     startCrawl();
     return true;
   }
@@ -75,8 +77,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "get-report") {
-    sendResponse(logs);
-    return true;
+    const { flat: networkCalls } = collectNetworkCalls();
+    sendResponse({ networkCalls });
+    return false;
   }
   
   if (msg.type === "get-crawl-status") {
@@ -98,6 +101,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return;
       }
       try {
+        const { flat: networkCalls, byPage: networkCallsByPage } = collectNetworkCalls();
+        if (!networkCalls.length) {
+          sendResponse({ error: "No network calls captured yet. Run a crawl first." });
+          return;
+        }
+        
         // Use RAG for intelligent retrieval
         if (!rag) {
           rag = new CASTRAG();
@@ -109,8 +118,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           currentSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         }
 
-        // Process network logs and create embeddings
-        const processResult = await rag.processNetworkLogs(apiKey, logs, currentSessionId);
+        // Process network calls and create embeddings
+        const processResult = await rag.processNetworkCalls(apiKey, networkCalls, currentSessionId);
         
         // Retrieve relevant requests using semantic search
         // Add more specific queries for GA4 and event tracking
@@ -141,14 +150,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         retrieved.allRelevant = retrieved.allRelevant.slice(0, 300);
         
         // Build optimized payload from retrieved data
-        let payload = buildRAGPayload(retrieved, logs);
+        let payload = buildRAGPayload(retrieved, networkCallsByPage);
         
         // Final safety check - if still too large, use filtered version
         const payloadStr = JSON.stringify(payload);
         const estimatedTokens = Math.ceil(payloadStr.length / 4);
         if (estimatedTokens > 700000) {
           console.warn('Payload still too large after RAG, using filtered version');
-          payload = buildNetworkPayloadSlim(logs);
+          payload = buildNetworkPayloadFromCalls(networkCallsByPage, { maxPages: 15, maxCallsPerPage: 200 });
         }
         
         const aiResult = await callGemini(apiKey, payload);
@@ -175,7 +184,7 @@ function startCrawl() {
 
     logs = {};
     const seedUrl = normalizeUrl(u.href);
-    queue = [{ url: u.href, depth: 0 }];
+    queue = [{ url: u.href, depth: 1 }]; // Seed page is depth 1
     visited = new Set();
     allDiscoveredLinks = new Set([seedUrl]); // Initialize with seed URL
     crawlActive = true;
@@ -184,13 +193,15 @@ function startCrawl() {
     // Store crawl state for popup persistence
     chrome.storage.local.set({
       CAST_crawlActive: true,
-      CAST_crawlStatus: `Starting crawl (depth ${maxDepth})… browser will navigate within this domain.`,
+      CAST_crawlStatus: `Starting crawl (depth ${maxDepth}, limit ${pageLimit ? pageLimit : 'all'})… browser will navigate within this domain.`,
       CAST_crawlStartTime: Date.now(),
-      CAST_crawlDepth: maxDepth
+      CAST_crawlDepth: maxDepth,
+      CAST_pageLimit: pageLimit ?? "all"
     });
     
     // Notify popup if open
-    notifyPopupStatus(`Starting crawl (depth ${maxDepth})… browser will navigate within this domain.`);
+    const startStatus = `Starting crawl (depth ${maxDepth}, limit ${pageLimit ? pageLimit : 'all'})… browser will navigate within this domain.`;
+    notifyPopupStatus(startStatus);
     
     // Initialize new RAG session
     currentSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -251,6 +262,22 @@ function processNext() {
       CAST_crawlActive: false,
       CAST_crawlStatus: "Crawl stopped."
     });
+    return;
+  }
+
+  if (pageLimit && visited.size >= pageLimit) {
+    console.log(`Page limit of ${pageLimit} reached, ending crawl.`);
+    crawlActive = false;
+    if (pageTimeout) {
+      clearTimeout(pageTimeout);
+      pageTimeout = null;
+    }
+    const limitStatus = `Crawl complete: reached page limit (${visited.size}/${pageLimit} pages).`;
+    chrome.storage.local.set({
+      CAST_crawlActive: false,
+      CAST_crawlStatus: limitStatus
+    });
+    notifyPopupStatus(limitStatus);
     return;
   }
   
@@ -591,180 +618,64 @@ chrome.debugger.onEvent.addListener((src, method, params) => {
 // Strategy: Keep ALL analytics requests with full data, keep tech stack indicators,
 // but limit/summarize other requests to stay within token limits
 
-function buildNetworkPayloadSlim(logs) {
+function buildNetworkPayloadFromCalls(networkCallsByPage, options = {}) {
   const pages = [];
-  const entries = Object.entries(logs);
+  const maxPages = options.maxPages || 20;
+  const maxRequestsPerPage = options.maxCallsPerPage || 200;
+  const essentialHeaders = ['user-agent', 'referer', 'content-type', 'authorization', 'x-forwarded-for'];
+  const entries = Object.entries(networkCallsByPage)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .slice(0, maxPages);
 
-  // Sort pages deterministically (by URL)
-  entries.sort((a, b) => a[0].localeCompare(b[0]));
-  
-  // Limit to first 20 pages to prevent token overflow (still comprehensive)
-  const limitedPages = entries.slice(0, 20);
-
-  // Patterns to identify analytics and tech stack domains
-  const analyticsPattern = /(google-analytics|googletagmanager|segment|mixpanel|amplitude|hotjar|clarity|hubspot|adroll|facebook|meta|tiktok|linkedin|twitter|pinterest|reddit|quora|bing|microsoft|sentry|datadog|newrelic|fullstory|heap|pendo|optimizely|vwo|ab-tasty)/i;
-  const techStackPattern = /(vercel|netlify|cloudflare|aws|azure|gcp|fastly|akamai|cloudfront|contentful|wordpress|shopify|sanity|strapi|prismic|drupal|squarespace|wix|webflow|nextjs|react|vue|angular|svelte|nuxt|gatsby)/i;
-  const cdnPattern = /(cdn|static|assets|jsdelivr|unpkg|cdnjs)/i;
-
-  for (const [pageUrl, entry] of limitedPages) {
-    const net = entry.network || [];
-    const requests = [];
-    const responses = [];
-    const seenUrls = new Set(); // Deduplicate similar requests
-
-    for (const n of net) {
-      if (n.method === "Network.requestWillBeSent") {
-        const req = n.params && n.params.request;
-        const requestId = n.params.requestId;
-        if (!req || !req.url) continue;
-
-        try {
-          const u = new URL(req.url);
-          const hostname = u.hostname;
-          const pathname = u.pathname;
-          
-          // Determine if this is analytics, tech stack, or other
-          const isAnalytics = analyticsPattern.test(hostname) || analyticsPattern.test(pathname);
-          const isTechStack = techStackPattern.test(hostname) || techStackPattern.test(pathname) || cdnPattern.test(hostname);
-          const isImportant = isAnalytics || isTechStack;
-          
-          // For non-important requests, create a simplified signature to deduplicate
-          if (!isImportant) {
-            const signature = `${hostname}${pathname}`;
-            if (seenUrls.has(signature)) {
-              continue; // Skip duplicate non-important requests
-            }
-            seenUrls.add(signature);
-          }
-          
-          const queryKeys = Array.from(u.searchParams.keys());
-          const queryParams = Object.fromEntries(u.searchParams.entries());
-          const headers = req.headers || {};
-          const headerKeys = Object.keys(headers);
-          
-          // Full data for analytics and tech stack, limited for others
-          let headerValues = {};
-          let postData = null;
-          
-          if (isImportant) {
-            // Full headers and POST data for analytics/tech stack
-            headerValues = headers;
-            postData = req.postData || null;
-            
-            // Truncate very large POST bodies (keep first 2000 chars)
-            if (postData && postData.length > 2000) {
-              postData = postData.slice(0, 2000) + '...[truncated]';
-            }
-          } else {
-            // For other requests, only include essential headers
-            const essentialHeaders = ['user-agent', 'referer', 'origin', 'content-type', 'authorization'];
-            for (const key of essentialHeaders) {
-              if (headers[key]) {
-                headerValues[key] = headers[key];
-              }
-            }
-            // No POST data for non-important requests
-          }
-
-          const item = {
-            requestId,
-            host: hostname,
-            pathname: pathname,
-            method: req.method || "GET",
-            queryKeys,
-            queryParams: isImportant ? queryParams : {}, // Full query params only for important
-            headerKeys,
-            headerValues,
-            hasBody: !!req.postData,
-            postData: postData
-          };
-          
-          requests.push(item);
-        } catch (e) {
-          continue;
-        }
-      } else if (n.method === "Network.responseReceived") {
-        const response = n.params && n.params.response;
-        const requestId = n.params.requestId;
-        if (!response || !response.url) continue;
-
-        try {
-          const u = new URL(response.url);
-          const isAnalytics = analyticsPattern.test(u.hostname) || analyticsPattern.test(u.pathname);
-          const isTechStack = techStackPattern.test(u.hostname) || techStackPattern.test(u.pathname) || cdnPattern.test(u.hostname);
-          const isImportant = isAnalytics || isTechStack;
-          
-          responses.push({
-            requestId,
-            url: response.url,
-            status: response.status,
-            statusText: response.statusText,
-            mimeType: response.mimeType,
-            headers: isImportant ? (response.headers || {}) : {} // Full headers only for important
-          });
-        } catch (e) {
-          continue;
+  for (const [pageUrl, calls] of entries) {
+    const requests = calls.slice(0, maxRequestsPerPage).map(call => {
+      const filteredHeaders = {};
+      const headers = call.headerValues || {};
+      for (const key of essentialHeaders) {
+        if (headers[key]) {
+          filteredHeaders[key] = headers[key];
+        } else if (headers[key?.toUpperCase?.()]) {
+          filteredHeaders[key] = headers[key.toUpperCase()];
         }
       }
-    }
-
-    // Only include pages with requests (skip empty pages)
-    if (requests.length > 0) {
-      pages.push({
-        pageUrl,
-        requests,
-        responses
-      });
-    }
-  }
-
-  // Estimate payload size (rough approximation: 1 token ≈ 4 characters)
-  const payloadStr = JSON.stringify({ pages });
-  const estimatedTokens = Math.ceil(payloadStr.length / 4);
-  
-  // If still too large (>800k tokens to leave room), reduce further
-  if (estimatedTokens > 800000) {
-    // Further reduce: limit to 15 pages and 200 requests per page for non-analytics
-    const furtherReduced = pages.slice(0, 15).map(page => {
-      const analyticsRequests = page.requests.filter(r => 
-        analyticsPattern.test(r.host) || analyticsPattern.test(r.pathname)
-      );
-      const techStackRequests = page.requests.filter(r => 
-        !analyticsPattern.test(r.host) && !analyticsPattern.test(r.pathname) &&
-        (techStackPattern.test(r.host) || techStackPattern.test(r.pathname) || cdnPattern.test(r.host))
-      );
-      const otherRequests = page.requests.filter(r => 
-        !analyticsPattern.test(r.host) && !analyticsPattern.test(r.pathname) &&
-        !techStackPattern.test(r.host) && !techStackPattern.test(r.pathname) && !cdnPattern.test(r.host)
-      ).slice(0, 200); // Limit to 200 other requests per page
-      
       return {
-        ...page,
-        requests: [...analyticsRequests, ...techStackRequests, ...otherRequests]
+        pageUrl,
+        url: call.url,
+        host: call.host,
+        pathname: call.pathname,
+        method: call.method,
+        queryParams: call.queryParams || {},
+        headerValues: filteredHeaders,
+        postData: call.postData || null
       };
     });
-    
-    return { pages: furtherReduced };
+    if (requests.length) {
+      pages.push({ pageUrl, requests, responses: [] });
+    }
   }
-  
+
   return { pages };
 }
 
 // Build payload from RAG-retrieved data
-function buildRAGPayload(retrieved, logs) {
+function buildRAGPayload(retrieved, networkCallsByPage) {
   const pages = [];
   const pageMap = new Map();
   // Higher limits for analytics to capture all events - NO LIMIT for analytics
-  const MAX_ANALYTICS_REQUESTS_PER_PAGE = 9999; // Effectively unlimited for analytics
-  const MAX_OTHER_REQUESTS_PER_PAGE = 100; // Limit for non-analytics
-  const MAX_POST_BODY_SIZE = 5000; // Increased to 5000 to capture batched GA4 events
-  const MAX_ANALYTICS_POST_BODY_SIZE = 20000; // Even larger for analytics POST bodies (20KB)
-  const MAX_PAGES = 30; // Increased from 20 to capture more pages
+  const MAX_ANALYTICS_REQUESTS_PER_PAGE = 400; // Plenty per page but keeps payload bounded
+  const MAX_TOTAL_ANALYTICS_REQUESTS = 6000; // Global cap for analytics across all pages
+  const MAX_OTHER_REQUESTS_PER_PAGE = 80; // Limit for non-analytics per page
+  const MAX_TOTAL_OTHER_REQUESTS = 2000; // Global cap for other requests
+  const MAX_POST_BODY_SIZE = 4000;
+  const MAX_ANALYTICS_POST_BODY_SIZE = 12000;
+  const MAX_PAGES = 20; // Tighter cap to keep payload within Gemini token limits
 
   // Deduplicate requests - but for analytics, include POST data in key to avoid deduplicating different events
   const seenRequests = new Set();
   const uniqueRequests = [];
   
+  let totalAnalyticsCount = 0;
+  let totalOtherCount = 0;
   for (const request of [...retrieved.analytics, ...retrieved.techStack, ...retrieved.allRelevant]) {
     const isAnalytics = /(google-analytics|analytics\.google|googletagmanager|gtag|gtm|segment|mixpanel|amplitude|hotjar|clarity|hubspot|adroll|facebook|meta|tiktok)/i.test(request.host);
     
@@ -775,30 +686,34 @@ function buildRAGPayload(retrieved, logs) {
       : '';
     const requestKey = `${request.host}${request.pathname}${JSON.stringify(request.queryParams || {})}${postPreview}`;
     
-    if (!seenRequests.has(requestKey)) {
-      seenRequests.add(requestKey);
-      
-      // Truncate POST body if too large (but keep full data for analytics)
-      const isAnalytics = /(google-analytics|analytics\.google|googletagmanager|gtag|gtm|segment|mixpanel|amplitude|hotjar|clarity|hubspot|adroll|facebook|meta|tiktok)/i.test(request.host);
-      const maxPostSize = isAnalytics ? MAX_ANALYTICS_POST_BODY_SIZE : MAX_POST_BODY_SIZE;
-      
-      if (request.postData && typeof request.postData === 'string' && request.postData.length > maxPostSize) {
-        request.postData = request.postData.slice(0, maxPostSize) + '...[truncated]';
-      }
-      
-      // Limit header values to essential ones only
-      if (request.headerValues) {
-        const essentialHeaders = ['user-agent', 'referer', 'content-type', 'authorization', 'x-forwarded-for'];
-        const filteredHeaders = {};
-        for (const key of essentialHeaders) {
-          if (request.headerValues[key]) {
-            filteredHeaders[key] = request.headerValues[key];
-          }
+    if (seenRequests.has(requestKey)) continue;
+    
+    if (isAnalytics && totalAnalyticsCount >= MAX_TOTAL_ANALYTICS_REQUESTS) continue;
+    if (!isAnalytics && totalOtherCount >= MAX_TOTAL_OTHER_REQUESTS) continue;
+    
+    seenRequests.add(requestKey);
+    
+    const maxPostSize = isAnalytics ? MAX_ANALYTICS_POST_BODY_SIZE : MAX_POST_BODY_SIZE;
+    if (request.postData && typeof request.postData === 'string' && request.postData.length > maxPostSize) {
+      request.postData = request.postData.slice(0, maxPostSize) + '...[truncated]';
+    }
+    
+    if (request.headerValues) {
+      const essentialHeaders = ['user-agent', 'referer', 'content-type', 'authorization', 'x-forwarded-for'];
+      const filteredHeaders = {};
+      for (const key of essentialHeaders) {
+        if (request.headerValues[key]) {
+          filteredHeaders[key] = request.headerValues[key];
         }
-        request.headerValues = filteredHeaders;
       }
-      
-      uniqueRequests.push(request);
+      request.headerValues = filteredHeaders;
+    }
+    
+    uniqueRequests.push(request);
+    if (isAnalytics) {
+      totalAnalyticsCount++;
+    } else {
+      totalOtherCount++;
     }
   }
 
@@ -822,35 +737,11 @@ function buildRAGPayload(retrieved, logs) {
     }
   }
 
-  // Add pages from logs that have retrieved requests (limit to MAX_PAGES)
-  const entries = Object.entries(logs).slice(0, MAX_PAGES);
-  for (const [pageUrl, entry] of entries) {
-    if (pageMap.has(pageUrl)) {
-      const page = pageMap.get(pageUrl);
-      
-      // Add responses if available (limit responses too)
-      const net = entry.network || [];
-      let responseCount = 0;
-      const maxResponses = MAX_ANALYTICS_REQUESTS_PER_PAGE; // Use same limit as requests
-      for (const n of net) {
-        if (responseCount >= maxResponses) break;
-        if (n.method === "Network.responseReceived") {
-          const response = n.params?.response;
-          if (response) {
-            page.responses.push({
-              requestId: n.params.requestId,
-              url: response.url,
-              status: response.status,
-              mimeType: response.mimeType,
-              headers: {} // Don't include response headers to save space
-            });
-            responseCount++;
-          }
-        }
-      }
-      
-      pages.push(page);
-    }
+  const entries = Array.from(pageMap.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .slice(0, MAX_PAGES);
+  for (const [, page] of entries) {
+    pages.push(page);
   }
 
   // Final size check - estimate tokens (1 token ≈ 4 characters)
@@ -869,10 +760,45 @@ function buildRAGPayload(retrieved, logs) {
   // If still too large, use fallback to filtered version
   if (estimatedTokens > 700000) {
     console.warn('RAG payload too large, using filtered fallback');
-    return buildNetworkPayloadSlim(logs);
+    return buildNetworkPayloadFromCalls(networkCallsByPage, { maxPages: 15, maxCallsPerPage: 150 });
   }
 
   return payload;
+}
+function collectNetworkCalls() {
+  const flat = [];
+  const byPage = {};
+  for (const [pageUrl, entry] of Object.entries(logs)) {
+    const networkEvents = entry.network || [];
+    for (const event of networkEvents) {
+      if (event.method !== "Network.requestWillBeSent") continue;
+      const req = event.params?.request;
+      if (!req || !req.url) continue;
+      let urlObj;
+      try {
+        urlObj = new URL(req.url);
+      } catch (e) {
+        continue;
+      }
+      const call = {
+        pageUrl,
+        url: req.url,
+        method: req.method || "GET",
+        host: urlObj.host,
+        pathname: urlObj.pathname,
+        queryParams: Object.fromEntries(urlObj.searchParams.entries()),
+        headerValues: req.headers || {},
+        postData: req.postData || null,
+        requestId: event.params?.requestId || null
+      };
+      flat.push(call);
+      if (!byPage[pageUrl]) {
+        byPage[pageUrl] = [];
+      }
+      byPage[pageUrl].push(call);
+    }
+  }
+  return { flat, byPage };
 }
 
 // ---- Gemini 2.5 Flash call ----

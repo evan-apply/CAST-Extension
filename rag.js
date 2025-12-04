@@ -239,8 +239,8 @@ class CASTRAG {
     });
   }
 
-  // Process all network logs and create embeddings
-  async processNetworkLogs(apiKey, logs, sessionId) {
+  // Process network call list and create embeddings
+  async processNetworkCalls(apiKey, networkCalls, sessionId) {
     if (!this.db) await this.initDB();
 
     // Clear old session data
@@ -250,53 +250,38 @@ class CASTRAG {
     const analyticsPattern = /(google-analytics|analytics\.google|googletagmanager|gtag|gtm|segment|mixpanel|amplitude|hotjar|clarity|hubspot|adroll|facebook|meta|tiktok|linkedin|twitter|pinterest|reddit|quora|bing|microsoft|sentry|datadog|newrelic|fullstory|heap|pendo|optimizely|vwo|ab-tasty|doubleclick|googleadservices|googlesyndication)/i;
     const techStackPattern = /(vercel|netlify|cloudflare|aws|azure|gcp|fastly|akamai|cloudfront|contentful|wordpress|shopify|sanity|strapi|prismic|drupal|squarespace|wix|webflow|nextjs|react|vue|angular|svelte|nuxt|gatsby)/i;
 
-    const entries = Object.entries(logs);
     let processed = 0;
-    const total = entries.reduce((sum, [, entry]) => sum + (entry.network || []).length, 0);
+    const total = networkCalls.length;
 
-    // Process in batches to avoid overwhelming the API
-    for (const [pageUrl, entry] of entries) {
-      const net = entry.network || [];
-      
-      for (const n of net) {
-        if (n.method === "Network.requestWillBeSent") {
-          const req = n.params?.request;
-          if (!req || !req.url) continue;
+    for (const call of networkCalls) {
+      try {
+        const hostname = call.host || new URL(call.url).hostname;
+        const pathname = call.pathname || new URL(call.url).pathname;
+        const isAnalytics = analyticsPattern.test(hostname) || analyticsPattern.test(pathname);
+        const isTechStack = techStackPattern.test(hostname) || techStackPattern.test(pathname);
 
-          try {
-            const u = new URL(req.url);
-            const hostname = u.hostname;
-            const isAnalytics = analyticsPattern.test(hostname) || analyticsPattern.test(u.pathname);
-            const isTechStack = techStackPattern.test(hostname) || techStackPattern.test(u.pathname);
+        if (isAnalytics || isTechStack || processed < 5000) {
+          const requestData = {
+            requestId: call.requestId || `${hostname}_${Date.now()}_${Math.random()}`,
+            host: hostname,
+            pathname,
+            method: call.method || "GET",
+            queryParams: call.queryParams || {},
+            headerValues: call.headerValues || {},
+            postData: call.postData || null,
+            pageUrl: call.pageUrl || null
+          };
 
-            // Process ALL analytics and tech stack requests (no limit for analytics)
-            // Only limit non-analytics/tech-stack requests
-            // Increased limit to process more requests
-            if (isAnalytics || isTechStack || processed < 5000) {
-              const requestData = {
-                requestId: n.params.requestId,
-                host: hostname,
-                pathname: u.pathname,
-                method: req.method || "GET",
-                queryParams: Object.fromEntries(u.searchParams.entries()),
-                headerValues: req.headers || {},
-                postData: req.postData || null,
-                pageUrl
-              };
+          const embedding = await this.createEmbedding(apiKey, requestData);
+          await this.storeEmbedding(requestData, embedding, sessionId);
+          processed++;
 
-              const embedding = await this.createEmbedding(apiKey, requestData);
-              await this.storeEmbedding(requestData, embedding, sessionId);
-              processed++;
-
-              // Small delay to avoid rate limiting
-              if (processed % 10 === 0) {
-                await new Promise(resolve => setTimeout(resolve, 100));
-              }
-            }
-          } catch (e) {
-            console.error('Error processing request:', e);
+          if (processed % 10 === 0) {
+            await new Promise(resolve => setTimeout(resolve, 100));
           }
         }
+      } catch (e) {
+        console.error('Error processing request:', e);
       }
     }
 

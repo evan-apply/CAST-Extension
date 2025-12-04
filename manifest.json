@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "CAST 3.2 – Auto Crawler + AI Network Recon (Slim)",
   "version": "3.2.0",
-  "permissions": ["debugger","tabs","activeTab","scripting","storage"],
+"permissions": ["debugger","tabs","activeTab","scripting","storage","downloads"],
   "host_permissions": ["<all_urls>"],
   "action": {"default_popup":"popup/popup.html"},
   "background": {"service_worker":"background.js"},

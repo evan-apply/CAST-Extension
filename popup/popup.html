@@ -234,12 +234,21 @@
           <label for="crawlDepth">Crawl Depth</label>
           <input type="number" id="crawlDepth" min="0" max="5" value="2" />
         </div>
+        <div class="input-group">
+          <label for="pageLimit">Page Limit</label>
+          <select id="pageLimit">
+            <option value="10">10</option>
+            <option value="50">50</option>
+            <option value="all" selected>All</option>
+          </select>
+          <small>Limits total pages visited per crawl.</small>
+        </div>
       </div>
 
       <div class="button-group">
         <button id="start">Start Full Crawl</button>
         <button id="runAI">Run AI Analysis</button>
-        <button id="downloadJSON" class="secondary">Download Raw JSON</button>
+        <button id="downloadJSON" class="secondary">Download Raw Network Calls</button>
       </div>
 
       <div id="status"></div>

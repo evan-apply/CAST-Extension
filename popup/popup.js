@@ -2,6 +2,7 @@ const statusEl = document.getElementById("status");
 const reportBox = document.getElementById("reportBox");
 const apiKeyInput = document.getElementById("apiKey");
 const depthInput = document.getElementById("crawlDepth");
+const pageLimitSelect = document.getElementById("pageLimit");
 
 // Restore state when popup opens
 function restoreCrawlState() {
@@ -10,7 +11,8 @@ function restoreCrawlState() {
     "CAST_crawlStatus", 
     "CAST_crawlDepth",
     "CAST_visitedCount",
-    "CAST_queuedCount"
+    "CAST_queuedCount",
+    "CAST_pageLimit"
   ], (res) => {
     if (res.CAST_crawlActive) {
       const status = res.CAST_crawlStatus || "Crawl in progress...";
@@ -34,6 +36,13 @@ function restoreCrawlState() {
     
     if (res.CAST_crawlDepth !== undefined) {
       depthInput.value = res.CAST_crawlDepth;
+    }
+    if (res.CAST_pageLimit !== undefined) {
+      if (res.CAST_pageLimit === "all") {
+        pageLimitSelect.value = "all";
+      } else if (typeof res.CAST_pageLimit === "number") {
+        pageLimitSelect.value = String(res.CAST_pageLimit);
+      }
     }
   });
   
@@ -120,27 +129,35 @@ document.getElementById("start").onclick = () => {
     statusEl.style.display = "block";
     return;
   }
-  statusEl.textContent = `Starting crawl (depth ${depth})… browser will navigate within this domain.`;
+  const limitValue = pageLimitSelect.value;
+  const pageLimit = limitValue === "all" ? null : parseInt(limitValue, 10);
+  const limitLabel = limitValue === "all" ? "all pages" : `${limitValue} pages`;
+  statusEl.textContent = `Starting crawl (depth ${depth}, limit ${limitLabel})… browser will navigate within this domain.`;
   statusEl.style.display = "block";
   reportBox.textContent = "";
-  // Store depth
-  chrome.storage.local.set({ CAST_crawlDepth: depth });
-  chrome.runtime.sendMessage({ type: "crawl-start", depth: depth });
+  chrome.storage.local.set({ 
+    CAST_crawlDepth: depth,
+    CAST_pageLimit: limitValue === "all" ? "all" : pageLimit
+  });
+  chrome.runtime.sendMessage({ type: "crawl-start", depth: depth, pageLimit });
 };
 
 document.getElementById("downloadJSON").onclick = () => {
   chrome.runtime.sendMessage({ type: "get-report" }, (data) => {
-    if (!data || Object.keys(data).length === 0) {
-      statusEl.textContent = "No data yet. Run a crawl first.";
+    const calls = data?.networkCalls || [];
+    if (!calls.length) {
+      statusEl.textContent = "No network calls captured yet. Run a crawl first.";
+      statusEl.style.display = "block";
       return;
     }
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify(calls, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "CAST_report.json";
+    a.download = "CAST_network_calls.json";
     a.click();
-    statusEl.textContent = "Raw JSON report downloaded.";
+    statusEl.textContent = "Raw network calls downloaded.";
+    statusEl.style.display = "block";
   });
 };
 
