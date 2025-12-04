@@ -272,6 +272,45 @@ async function fetchStoreRecords(storeName, sessionId) {
   });
 }
 
+async function clearStoreEntriesForSession(storeName, sessionId) {
+  if (!networkCallsDB) await initNetworkCallsDB();
+  if (!networkCallsDB.objectStoreNames.contains(storeName)) return;
+  if (!sessionId) return;
+
+  await new Promise((resolve, reject) => {
+    const transaction = networkCallsDB.transaction([storeName], 'readwrite');
+    const store = transaction.objectStore(storeName);
+    const index = store.index('sessionId');
+    const range = IDBKeyRange.only(sessionId);
+    const request = index.openCursor(range);
+    request.onsuccess = (event) => {
+      const cursor = event.target.result;
+      if (cursor) {
+        cursor.delete();
+        cursor.continue();
+      } else {
+        resolve();
+      }
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function addEntriesToStore(storeName, entries) {
+  if (!networkCallsDB) await initNetworkCallsDB();
+  if (!networkCallsDB.objectStoreNames.contains(storeName)) return;
+  if (!entries || entries.length === 0) return;
+
+  const transaction = networkCallsDB.transaction([storeName], 'readwrite');
+  const store = transaction.objectStore(storeName);
+
+  await Promise.all(entries.map(entry => new Promise((resolve, reject) => {
+    const request = store.add(entry);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  })));
+}
+
 async function getDatabaseStats(sessionId) {
   try {
     await initNetworkCallsDB();
@@ -288,12 +327,17 @@ async function getDatabaseStats(sessionId) {
 }
 
 async function getActiveSessionId() {
-  if (currentSessionId) return currentSessionId;
   return new Promise((resolve) => {
     chrome.storage.local.get(["CAST_currentSessionId"], (res) => {
       resolve(res?.CAST_currentSessionId || null);
     });
   });
+}
+
+async function ensureCurrentSessionId() {
+  if (currentSessionId) return currentSessionId;
+  currentSessionId = await getActiveSessionId();
+  return currentSessionId;
 }
 
 function dedupeTechRecords(records = []) {
@@ -394,54 +438,35 @@ async function consolidateStoredResults(sessionId) {
 
     if (!networkCallsDB) await initNetworkCallsDB();
 
-    const techTx = networkCallsDB.transaction(['techStackResults'], 'readwrite');
-    const techStore = techTx.objectStore('techStackResults');
-    await new Promise((resolve, reject) => {
-      const clearReq = techStore.clear();
-      clearReq.onsuccess = resolve;
-      clearReq.onerror = () => reject(clearReq.error);
-    });
-
-    const analyticsTx = networkCallsDB.transaction(['analyticsEventsResults'], 'readwrite');
-    const analyticsStore = analyticsTx.objectStore('analyticsEventsResults');
-    await new Promise((resolve, reject) => {
-      const clearReq = analyticsStore.clear();
-      clearReq.onsuccess = resolve;
-      clearReq.onerror = () => reject(clearReq.error);
-    });
+    await clearStoreEntriesForSession('techStackResults', sessionId);
+    await clearStoreEntriesForSession('analyticsEventsResults', sessionId);
 
     const techTimestamp = Date.now();
-    await Promise.all(dedupedTech.map(item => new Promise((resolve, reject) => {
-      const request = techStore.add({
-        sessionId,
-        batchId: 'consolidated',
-        name: item.name,
-        category: item.category,
-        confidence: Number(item.confidence),
-        evidence: item.evidence ? item.evidence.split(' | ').filter(Boolean) : [],
-        occurrences: item.occurrences,
-        timestamp: techTimestamp
-      });
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
-    })));
+    const techEntries = dedupedTech.map(item => ({
+      sessionId,
+      batchId: 'consolidated',
+      name: item.name,
+      category: item.category,
+      confidence: Number(item.confidence),
+      evidence: item.evidence ? item.evidence.split(' | ').filter(Boolean) : [],
+      occurrences: item.occurrences,
+      timestamp: techTimestamp
+    }));
+    await addEntriesToStore('techStackResults', techEntries);
 
     const analyticsTimestamp = Date.now();
-    await Promise.all(dedupedAnalytics.map(item => new Promise((resolve, reject) => {
-      const request = analyticsStore.add({
-        sessionId,
-        batchId: 'consolidated',
-        provider: item.provider,
-        event_name: item.event_name,
-        page_url: item.page_url,
-        request_url: item.request_url,
-        notes: item.notes,
-        occurrences: item.occurrences,
-        timestamp: analyticsTimestamp
-      });
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
-    })));
+    const analyticsEntries = dedupedAnalytics.map(item => ({
+      sessionId,
+      batchId: 'consolidated',
+      provider: item.provider,
+      event_name: item.event_name,
+      page_url: item.page_url,
+      request_url: item.request_url,
+      notes: item.notes,
+      occurrences: item.occurrences,
+      timestamp: analyticsTimestamp
+    }));
+    await addEntriesToStore('analyticsEventsResults', analyticsEntries);
   } catch (error) {
     console.error('Error consolidating stored results:', error);
   }
@@ -807,7 +832,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "get-db-stats") {
     (async () => {
       try {
-        const stats = await getDatabaseStats();
+        const sessionId = await ensureCurrentSessionId();
+        const stats = await getDatabaseStats(sessionId);
         sendResponse(stats);
       } catch (error) {
         sendResponse({ error: error.message || String(error) });
@@ -927,6 +953,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "download-network-csv") {
     (async () => {
       try {
+        const sessionId = await ensureCurrentSessionId();
+        if (!sessionId) {
+          sendResponse({ error: "No session data available. Run a crawl first." });
+          return;
+        }
         const { flat: networkCalls } = await collectNetworkCalls();
         if (!networkCalls.length) {
           sendResponse({ error: "No network calls captured yet. Run a crawl first." });
@@ -1790,15 +1821,18 @@ function buildRAGPayload(retrieved, networkCallsByPage) {
 // Collect network calls from IndexedDB (preferred) or memory (fallback)
 async function collectNetworkCalls() {
   // Try to get from IndexedDB first (persistent storage)
-  if (currentSessionId) {
+  const sessionId = await ensureCurrentSessionId();
+  if (sessionId) {
     try {
-      const dbResult = await getNetworkCallsFromDB(currentSessionId);
+      const dbResult = await getNetworkCallsFromDB(sessionId);
       if (dbResult.flat.length > 0) {
         return dbResult; // Return IndexedDB data if available
       }
     } catch (error) {
       console.warn('Failed to retrieve from IndexedDB, falling back to memory:', error);
     }
+  } else {
+    console.warn('No active session ID found when collecting network calls.');
   }
   
   // Fallback to in-memory logs (for backward compatibility and active crawls)
