@@ -260,56 +260,18 @@ document.getElementById("start").onclick = () => {
 };
 
 document.getElementById("downloadJSON").onclick = () => {
-  chrome.runtime.sendMessage({ type: "get-report" }, (data) => {
-    const calls = data?.networkCalls || [];
-    if (!calls.length) {
-      statusEl.textContent = "No network calls captured yet. Run a crawl first.";
-      statusEl.style.display = "block";
+  statusEl.textContent = "Preparing raw network export…";
+  statusEl.style.display = "block";
+  chrome.runtime.sendMessage({ type: "download-network-csv" }, (res) => {
+    if (!res) {
+      statusEl.textContent = "No response from background.";
       return;
     }
-    
-    // Convert to CSV format
-    const csvRows = [["Page URL", "Request URL", "Method", "Host", "Pathname", "Query Params", "Has POST Data", "POST Data Preview"]];
-    
-    calls.forEach(call => {
-      const queryParamsStr = call.queryParams ? JSON.stringify(call.queryParams) : "";
-      const postDataPreview = call.postData 
-        ? (typeof call.postData === 'string' ? call.postData.substring(0, 500) : JSON.stringify(call.postData).substring(0, 500))
-        : "";
-      const hasPostData = call.postData ? "Yes" : "No";
-      
-      csvRows.push([
-        call.pageUrl || "",
-        call.url || "",
-        call.method || "GET",
-        call.host || "",
-        call.pathname || "",
-        queryParamsStr,
-        hasPostData,
-        postDataPreview
-      ]);
-    });
-    
-    // Convert to CSV string
-    const csvContent = csvRows.map(row => 
-      row.map(cell => {
-        // Escape quotes and wrap in quotes if contains comma, quote, or newline
-        const cellStr = String(cell || "").replace(/"/g, '""');
-        if (cellStr.includes(',') || cellStr.includes('"') || cellStr.includes('\n')) {
-          return `"${cellStr}"`;
-        }
-        return cellStr;
-      }).join(',')
-    ).join('\n');
-    
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "CAST_network_calls.csv";
-    a.click();
-    statusEl.textContent = `Raw network calls downloaded (${calls.length} calls).`;
-    statusEl.style.display = "block";
+    if (res.error) {
+      statusEl.textContent = "Download error: " + res.error;
+      return;
+    }
+    statusEl.textContent = `Raw network calls download started (${res.count || 0} calls).`;
   });
 };
 

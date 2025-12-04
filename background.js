@@ -368,71 +368,6 @@ async function buildAnalyticsExport(sessionId) {
   if (!records.length) return [];
   const deduped = dedupeAnalyticsRecords(records);
   const rows = [["Provider", "Event Name", "Page URL", "Request URL", "Notes", "Occurrences"]];
-async function consolidateStoredResults(sessionId) {
-  try {
-    const [techRecords, analyticsRecords] = await Promise.all([
-      fetchStoreRecords('techStackResults', sessionId),
-      fetchStoreRecords('analyticsEventsResults', sessionId)
-    ]);
-
-    const dedupedTech = dedupeTechRecords(techRecords);
-    const dedupedAnalytics = dedupeAnalyticsRecords(analyticsRecords);
-
-    // Clear existing stores before writing deduped results
-    if (networkCallsDB) {
-      const techTx = networkCallsDB.transaction(['techStackResults'], 'readwrite');
-      const techStore = techTx.objectStore('techStackResults');
-      techStore.clear();
-
-      const analyticsTx = networkCallsDB.transaction(['analyticsEventsResults'], 'readwrite');
-      const analyticsStore = analyticsTx.objectStore('analyticsEventsResults');
-      analyticsStore.clear();
-
-      // Reinsert consolidated tech records
-      const techTimestamp = Date.now();
-      const techPromises = dedupedTech.map(item => {
-        return new Promise((resolve, reject) => {
-          const request = techStore.add({
-            sessionId,
-            batchId: 'consolidated',
-            name: item.name,
-            category: item.category,
-            confidence: Number(item.confidence),
-            evidence: item.evidence ? item.evidence.split(' | ').filter(Boolean) : [],
-            occurrences: item.occurrences,
-            timestamp: techTimestamp
-          });
-          request.onsuccess = () => resolve();
-          request.onerror = () => reject(request.error);
-        });
-      });
-
-      // Reinsert consolidated analytics records
-      const analyticsTimestamp = Date.now();
-      const analyticsPromises = dedupedAnalytics.map(item => {
-        return new Promise((resolve, reject) => {
-          const request = analyticsStore.add({
-            sessionId,
-            batchId: 'consolidated',
-            provider: item.provider,
-            event_name: item.event_name,
-            page_url: item.page_url,
-            request_url: item.request_url,
-            notes: item.notes,
-            occurrences: item.occurrences,
-            timestamp: analyticsTimestamp
-          });
-          request.onsuccess = () => resolve();
-          request.onerror = () => reject(request.error);
-        });
-      });
-
-      await Promise.all([...techPromises, ...analyticsPromises]);
-    }
-  } catch (error) {
-    console.error('Error consolidating stored results:', error);
-  }
-}
   deduped.sort((a, b) => b.occurrences - a.occurrences || a.provider.localeCompare(b.provider));
   deduped.forEach((entry) => {
     rows.push([
@@ -445,6 +380,71 @@ async function consolidateStoredResults(sessionId) {
     ]);
   });
   return rows;
+}
+
+async function consolidateStoredResults(sessionId) {
+  try {
+    const [techRecords, analyticsRecords] = await Promise.all([
+      fetchStoreRecords('techStackResults', sessionId),
+      fetchStoreRecords('analyticsEventsResults', sessionId)
+    ]);
+
+    const dedupedTech = dedupeTechRecords(techRecords);
+    const dedupedAnalytics = dedupeAnalyticsRecords(analyticsRecords);
+
+    if (!networkCallsDB) await initNetworkCallsDB();
+
+    const techTx = networkCallsDB.transaction(['techStackResults'], 'readwrite');
+    const techStore = techTx.objectStore('techStackResults');
+    await new Promise((resolve, reject) => {
+      const clearReq = techStore.clear();
+      clearReq.onsuccess = resolve;
+      clearReq.onerror = () => reject(clearReq.error);
+    });
+
+    const analyticsTx = networkCallsDB.transaction(['analyticsEventsResults'], 'readwrite');
+    const analyticsStore = analyticsTx.objectStore('analyticsEventsResults');
+    await new Promise((resolve, reject) => {
+      const clearReq = analyticsStore.clear();
+      clearReq.onsuccess = resolve;
+      clearReq.onerror = () => reject(clearReq.error);
+    });
+
+    const techTimestamp = Date.now();
+    await Promise.all(dedupedTech.map(item => new Promise((resolve, reject) => {
+      const request = techStore.add({
+        sessionId,
+        batchId: 'consolidated',
+        name: item.name,
+        category: item.category,
+        confidence: Number(item.confidence),
+        evidence: item.evidence ? item.evidence.split(' | ').filter(Boolean) : [],
+        occurrences: item.occurrences,
+        timestamp: techTimestamp
+      });
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    })));
+
+    const analyticsTimestamp = Date.now();
+    await Promise.all(dedupedAnalytics.map(item => new Promise((resolve, reject) => {
+      const request = analyticsStore.add({
+        sessionId,
+        batchId: 'consolidated',
+        provider: item.provider,
+        event_name: item.event_name,
+        page_url: item.page_url,
+        request_url: item.request_url,
+        notes: item.notes,
+        occurrences: item.occurrences,
+        timestamp: analyticsTimestamp
+      });
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    })));
+  } catch (error) {
+    console.error('Error consolidating stored results:', error);
+  }
 }
 
 // Store AI analysis results in IndexedDB
@@ -918,6 +918,67 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ rows, filename: "CAST_analytics_events_consolidated.csv" });
       } catch (error) {
         console.error('Analytics export error:', error);
+        sendResponse({ error: error.message || String(error) });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === "download-network-csv") {
+    (async () => {
+      try {
+        const { flat: networkCalls } = await collectNetworkCalls();
+        if (!networkCalls.length) {
+          sendResponse({ error: "No network calls captured yet. Run a crawl first." });
+          return;
+        }
+
+        const rows = [["Page URL", "Request URL", "Method", "Host", "Pathname", "Query Params", "Has POST Data", "POST Data Preview"]];
+        networkCalls.forEach(call => {
+          const queryParamsStr = call.queryParams ? JSON.stringify(call.queryParams) : "";
+          const postDataPreview = call.postData 
+            ? (typeof call.postData === 'string' ? call.postData.substring(0, 500) : JSON.stringify(call.postData).substring(0, 500))
+            : "";
+          const hasPostData = call.postData ? "Yes" : "No";
+          rows.push([
+            call.pageUrl || "",
+            call.url || "",
+            call.method || "GET",
+            call.host || "",
+            call.pathname || "",
+            queryParamsStr,
+            hasPostData,
+            postDataPreview
+          ]);
+        });
+
+        const csvContent = rows.map(row =>
+          row.map(cell => {
+            const cellStr = String(cell || "").replace(/"/g, '""');
+            if (cellStr.includes(',') || cellStr.includes('"') || cellStr.includes('\n')) {
+              return `"${cellStr}"`;
+            }
+            return cellStr;
+          }).join(',')
+        ).join('\n');
+
+        const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+
+        chrome.downloads.download({
+          url,
+          filename: "CAST_network_calls.csv",
+          saveAs: true
+        }, (downloadId) => {
+          setTimeout(() => URL.revokeObjectURL(url), 2000);
+          if (chrome.runtime.lastError) {
+            sendResponse({ error: chrome.runtime.lastError.message });
+          } else {
+            sendResponse({ success: true, count: networkCalls.length, downloadId });
+          }
+        });
+      } catch (error) {
+        console.error('Network CSV export error:', error);
         sendResponse({ error: error.message || String(error) });
       }
     })();
@@ -1886,24 +1947,24 @@ Rules:
   };
 
   try {
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
 
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error("Gemini API error: " + text);
-    }
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error("Gemini API error: " + text);
+  }
 
-    const data = await res.json();
-    const cand = data.candidates && data.candidates[0];
-    if (!cand || !cand.content || !cand.content.parts) {
-      throw new Error("No content returned from Gemini.");
-    }
+  const data = await res.json();
+  const cand = data.candidates && data.candidates[0];
+  if (!cand || !cand.content || !cand.content.parts) {
+    throw new Error("No content returned from Gemini.");
+  }
 
-    const text = cand.content.parts.map((p) => p.text || "").join("");
+  const text = cand.content.parts.map((p) => p.text || "").join("");
     
     // Strip markdown code blocks if present (Gemini sometimes wraps JSON in ```json ... ```)
     let cleanedText = text.trim();
@@ -1915,13 +1976,13 @@ Rules:
       cleanedText = cleanedText.trim();
     }
     
-    let parsed;
-    try {
+  let parsed;
+  try {
       parsed = JSON.parse(cleanedText);
-    } catch (e) {
+  } catch (e) {
       throw new Error("Failed to parse Gemini JSON: " + cleanedText.slice(0, 200));
-    }
-    return parsed;
+  }
+  return parsed;
   } catch (error) {
     const isLastAttempt = attempt >= MAX_RETRIES;
     console.warn(`CAST: Gemini request failed on attempt ${attempt}/${MAX_RETRIES}:`, error);
