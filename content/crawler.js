@@ -100,6 +100,29 @@
 
   // Interact with search boxes
   async function interactWithSearch() {
+    // Skip if already on a search results page
+    const currentPath = location.pathname.toLowerCase();
+    const currentQuery = location.search.toLowerCase();
+    const isSearchResultsPage = currentPath.includes('/search') || 
+                                currentPath.includes('/results') || 
+                                currentPath.includes('/find') ||
+                                currentQuery.includes('?s=') || 
+                                currentQuery.includes('?q=') || 
+                                currentQuery.includes('?query=') || 
+                                currentQuery.includes('?search=') ||
+                                document.title.toLowerCase().includes('search results');
+    
+    if (isSearchResultsPage) {
+      console.log('CAST: Skipping search interaction on search results page.');
+      return false;
+    }
+
+    const storageKey = 'CAST_searchedInputs';
+    const result = await new Promise(resolve => {
+      chrome.storage.local.get([storageKey], resolve);
+    });
+    const searchedInputs = new Set(result[storageKey] || []);
+
     const searchSelectors = [
       'input[type="search"]',
       'input[name*="search" i]',
@@ -112,6 +135,12 @@
       try {
         const input = await waitForElement(selector, 2000);
         if (input && input.offsetParent !== null) {
+          const inputId = input.id || input.name || input.placeholder || `search_${location.pathname}`;
+          if (searchedInputs.has(inputId)) {
+            console.log(`CAST: Skipping already searched input: ${inputId}`);
+            continue;
+          }
+
           input.focus();
           input.value = 'Test'; // Changed to "Test" as requested
           input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -144,6 +173,8 @@
             }
             
             if (submitBtn) {
+              searchedInputs.add(inputId);
+              chrome.storage.local.set({ [storageKey]: Array.from(searchedInputs) });
               await new Promise(resolve => setTimeout(resolve, 200));
               submitBtn.click();
               await new Promise(resolve => setTimeout(resolve, 300));
@@ -152,6 +183,8 @@
           }
           
           // Try Enter key
+          searchedInputs.add(inputId);
+          chrome.storage.local.set({ [storageKey]: Array.from(searchedInputs) });
           await new Promise(resolve => setTimeout(resolve, 100));
           input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
           input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true }));
@@ -389,6 +422,16 @@
           break;
         }
         
+        // Prevent actual navigation for links – we only want analytics events
+        let preventedNavHandler = null;
+        if (el.tagName.toLowerCase() === 'a') {
+          preventedNavHandler = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          };
+          el.addEventListener('click', preventedNavHandler, { capture: true, once: true });
+        }
+        
         // Trigger mouse events for better analytics coverage (before click)
         el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, cancelable: true }));
         el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true }));
@@ -397,9 +440,6 @@
         
         // Click the element
         el.click();
-        
-        // Also trigger click event explicitly
-        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
         
         await new Promise(resolve => setTimeout(resolve, 50));
         
@@ -418,19 +458,55 @@
   }
 
   function scanPage(depth) {
+    // Find ALL clickable elements more comprehensively
     const all = Array.from(
-      document.querySelectorAll("a, button, [role='button'], *")
+      document.querySelectorAll("a, button, [role='button'], [onclick], [data-click], [class*='click'], [class*='button'], input[type='button'], input[type='submit']")
     );
-    const clickable = all.filter(isClickable);
+    
+    // Also check for elements with cursor pointer style
+    const allElements = Array.from(document.querySelectorAll("*"));
+    const pointerElements = allElements.filter(el => {
+      try {
+        const style = getComputedStyle(el);
+        return style.cursor === 'pointer' && el.offsetParent !== null;
+      } catch (e) {
+        return false;
+      }
+    });
+    
+    // Combine and deduplicate
+    const allClickable = [...new Set([...all, ...pointerElements])];
+    const clickable = allClickable.filter(el => {
+      try {
+        // Basic visibility check
+        if (el.offsetParent === null) return false;
+        const style = getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        return isClickable(el) || style.cursor === 'pointer';
+      } catch (e) {
+        return false;
+      }
+    });
 
     const internalLinks = new Set();
 
+    // Highlight ALL clickable elements
     clickable.forEach((el) => {
       highlight(el);
-      const href = el.href;
+      // Extract links from various sources
+      let href = el.href;
+      if (!href && el.tagName === 'A') {
+        href = el.getAttribute('href');
+      }
+      if (!href && el.onclick) {
+        // Try to extract URL from onclick handler
+        const onclickStr = el.getAttribute('onclick') || '';
+        const urlMatch = onclickStr.match(/['"](https?:\/\/[^'"]+)['"]/);
+        if (urlMatch) href = urlMatch[1];
+      }
       if (href) {
         try {
-          const u = new URL(href);
+          const u = new URL(href, location.origin);
           if (u.origin === origin) internalLinks.add(u.href);
         } catch (e) {}
       }
@@ -478,6 +554,7 @@
   }
 
   async function interactAndScan(depth) {
+    let scannedOnce = false;
     try {
       // Wait for page to be ready (minimal delay)
       await new Promise(resolve => setTimeout(resolve, 200));
@@ -497,16 +574,20 @@
       await autoScroll();
       await new Promise(resolve => setTimeout(resolve, 200));
 
+      // Scan before clicking so the background queue receives every link
+      scanPage(depth);
+      scannedOnce = true;
+      await new Promise(resolve => setTimeout(resolve, 200));
+
       // Click ALL clickable elements to trigger analytics
       await triggerAnalyticsClicks();
       await new Promise(resolve => setTimeout(resolve, 500)); // Longer wait after clicking all elements
-
-      // Final scan
-      scanPage(depth);
     } catch (e) {
       console.error('CAST interaction error:', e);
-      // Still scan even if interactions fail
-      scanPage(depth);
+      // Still scan if we never sent the page data
+      if (!scannedOnce) {
+        scanPage(depth);
+      }
     }
   }
 

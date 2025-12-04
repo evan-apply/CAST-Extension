@@ -198,8 +198,8 @@ function startCrawl() {
       rag.clearSession(currentSessionId).catch(console.error);
     }
 
-    // Clear submitted forms list for new crawl session
-    chrome.storage.local.remove(['CAST_submittedForms']);
+    // Clear submitted forms and searched inputs for new crawl session
+    chrome.storage.local.remove(['CAST_submittedForms', 'CAST_searchedInputs']);
 
     // Clear any existing timeout
     if (pageTimeout) {
@@ -537,7 +537,9 @@ function handlePageScanned(msg) {
             newLinks.push({ url: u.href, depth: depth + 1 });
           }
         }
-      } catch (e) {}
+      } catch (e) {
+        console.warn('CAST: Error processing link:', href, e);
+      }
     }
     
     // Add all new unique links to queue at once
@@ -545,8 +547,14 @@ function handlePageScanned(msg) {
       queue.push(...newLinks);
       // Sort queue by depth to prioritize breadth-first crawling
       queue.sort((a, b) => a.depth - b.depth);
+      console.log(`CAST: Added ${newLinks.length} new links from ${url}. Queue now has ${queue.length} items.`);
     }
   }
+  
+  // Update status after discovering links
+  const statusMsg = `Page scanned: ${url} (${visited.size} visited, ${queue.length} queued)`;
+  chrome.storage.local.set({ CAST_crawlStatus: statusMsg });
+  notifyPopupStatus(statusMsg);
 
   // Clear any pending timeout
   if (pageTimeout) {
