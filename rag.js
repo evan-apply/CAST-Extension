@@ -2,6 +2,55 @@
 // Uses Gemini embeddings to create a searchable vector store of network requests
 // This allows analyzing unlimited data without hitting token limits
 
+// Min-heap to keep only top-K results (more efficient than sorting all)
+class MinHeap {
+  constructor(maxSize) {
+    this.heap = [];
+    this.maxSize = maxSize;
+  }
+  
+  push(item) {
+    if (this.heap.length < this.maxSize) {
+      this.heap.push(item);
+      this.bubbleUp(this.heap.length - 1);
+    } else if (item.similarity > this.heap[0].similarity) {
+      this.heap[0] = item;
+      this.bubbleDown(0);
+    }
+  }
+  
+  bubbleUp(index) {
+    while (index > 0) {
+      const parent = Math.floor((index - 1) / 2);
+      if (this.heap[parent].similarity <= this.heap[index].similarity) break;
+      [this.heap[parent], this.heap[index]] = [this.heap[index], this.heap[parent]];
+      index = parent;
+    }
+  }
+  
+  bubbleDown(index) {
+    while (true) {
+      let smallest = index;
+      const left = 2 * index + 1;
+      const right = 2 * index + 2;
+      
+      if (left < this.heap.length && this.heap[left].similarity < this.heap[smallest].similarity) {
+        smallest = left;
+      }
+      if (right < this.heap.length && this.heap[right].similarity < this.heap[smallest].similarity) {
+        smallest = right;
+      }
+      if (smallest === index) break;
+      [this.heap[index], this.heap[smallest]] = [this.heap[smallest], this.heap[index]];
+      index = smallest;
+    }
+  }
+  
+  getSorted() {
+    return this.heap.sort((a, b) => b.similarity - a.similarity);
+  }
+}
+
 class CASTRAG {
   constructor() {
     this.dbName = 'CAST_RAG_DB';
@@ -37,6 +86,12 @@ class CASTRAG {
         if (!db.objectStoreNames.contains('sessions')) {
           db.createObjectStore('sessions', { keyPath: 'sessionId' });
         }
+        
+        // Store for embedding cache (persistent across sessions)
+        if (!db.objectStoreNames.contains('embeddingCache')) {
+          const cacheStore = db.createObjectStore('embeddingCache', { keyPath: 'cacheKey' });
+          cacheStore.createIndex('timestamp', 'timestamp', { unique: false });
+        }
       };
     });
   }
@@ -46,10 +101,40 @@ class CASTRAG {
     // Create a text representation of the request for embedding
     const text = this.requestToText(requestData);
     
-    // Check cache first
+    // Check in-memory cache first
     const cacheKey = this.hashText(text);
     if (this.embeddingCache.has(cacheKey)) {
       return this.embeddingCache.get(cacheKey);
+    }
+    
+    // Ensure DB is initialized for persistent cache check
+    if (!this.db) {
+      try {
+        await this.initDB();
+      } catch (error) {
+        console.warn('Failed to initialize DB for cache:', error);
+      }
+    }
+    
+    // Check persistent cache in IndexedDB
+    if (this.db) {
+      try {
+        const cacheStore = this.db.transaction(['embeddingCache'], 'readonly').objectStore('embeddingCache');
+        const cached = await new Promise((resolve, reject) => {
+          const request = cacheStore.get(cacheKey);
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        
+        if (cached && cached.embedding) {
+          // Update in-memory cache
+          this.embeddingCache.set(cacheKey, cached.embedding);
+          return cached.embedding;
+        }
+      } catch (error) {
+        // Cache read failed, continue to API call
+        console.warn('Cache read failed:', error);
+      }
     }
 
     try {
@@ -77,8 +162,29 @@ class CASTRAG {
         throw new Error('No embedding returned');
       }
 
-      // Cache the embedding
+      // Cache the embedding in memory
       this.embeddingCache.set(cacheKey, embedding);
+      
+      // Cache the embedding in IndexedDB (persistent)
+      if (this.db) {
+        try {
+          const cacheStore = this.db.transaction(['embeddingCache'], 'readwrite').objectStore('embeddingCache');
+          await new Promise((resolve, reject) => {
+            const request = cacheStore.put({
+              cacheKey,
+              embedding,
+              text: text.substring(0, 500), // Store text preview for debugging
+              timestamp: Date.now()
+            });
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(request.error);
+          });
+        } catch (error) {
+          // Cache write failed, but continue
+          console.warn('Cache write failed:', error);
+        }
+      }
+      
       return embedding;
     } catch (error) {
       console.error('Embedding creation failed:', error);
@@ -188,28 +294,76 @@ class CASTRAG {
     });
   }
 
-  // Search for similar requests using semantic search
+  // Search for similar requests using semantic search (optimized for large datasets)
   async searchSimilar(queryEmbedding, sessionId, limit = 50) {
     if (!this.db) await this.initDB();
 
     return new Promise((resolve, reject) => {
-      const store = this.db.transaction(['embeddings'], 'readonly').objectStore('embeddings');
-      const index = store.index('sessionId');
-      const request = index.getAll(sessionId);
-
-      request.onsuccess = () => {
-        const allRecords = request.result;
-        const similarities = allRecords.map(record => ({
-          ...record,
-          similarity: this.cosineSimilarity(queryEmbedding, record.embedding)
-        }));
-
-        // Sort by similarity and return top results
-        similarities.sort((a, b) => b.similarity - a.similarity);
-        resolve(similarities.slice(0, limit));
-      };
-
-      request.onerror = () => reject(request.error);
+      try {
+        const store = this.db.transaction(['embeddings'], 'readonly').objectStore('embeddings');
+        const index = store.index('sessionId');
+        
+        // Use min-heap to keep only top-K results (avoids sorting all 30K records)
+        const heap = new MinHeap(limit * 2); // Keep 2x limit for better accuracy
+        let processed = 0;
+        const BATCH_SIZE = 1000; // Process 1000 at a time
+        let batch = [];
+        
+        const request = index.openCursor(IDBKeyRange.only(sessionId));
+        
+        request.onsuccess = (event) => {
+          const cursor = event.target.result;
+          
+          if (!cursor) {
+            // Finished - process any remaining items and return results
+            for (const item of batch) {
+              heap.push(item);
+            }
+            const results = heap.getSorted().slice(0, limit);
+            console.log(`CAST: Processed ${processed} embeddings, returning top ${results.length}`);
+            resolve(results);
+            return;
+          }
+          
+          const record = cursor.value;
+          processed++;
+          
+          // Calculate similarity if embedding exists
+          if (record.embedding && Array.isArray(record.embedding)) {
+            try {
+              const similarity = this.cosineSimilarity(queryEmbedding, record.embedding);
+              batch.push({ ...record, similarity });
+            } catch (error) {
+              // Skip invalid records
+            }
+          }
+          
+          // Process batch when it reaches BATCH_SIZE to avoid memory issues
+          if (batch.length >= BATCH_SIZE) {
+            for (const item of batch) {
+              heap.push(item);
+            }
+            batch = []; // Clear batch
+            
+            // Yield to event loop to prevent blocking UI
+            setTimeout(() => {
+              cursor.continue();
+            }, 0);
+            return;
+          }
+          
+          // Continue to next record
+          cursor.continue();
+        };
+        
+        request.onerror = () => {
+          console.error('IndexedDB error in searchSimilar:', request.error);
+          reject(request.error);
+        };
+      } catch (error) {
+        console.error('Error in searchSimilar:', error);
+        reject(error);
+      }
     });
   }
 
@@ -239,20 +393,62 @@ class CASTRAG {
     });
   }
 
-  // Process network call list and create embeddings
-  async processNetworkCalls(apiKey, networkCalls, sessionId) {
+  // Create a unique signature for a network call to check if embedding exists
+  getRequestSignature(requestData) {
+    const queryStr = JSON.stringify(requestData.queryParams || {});
+    const postPreview = requestData.postData 
+      ? (typeof requestData.postData === 'string' ? requestData.postData.slice(0, 200) : JSON.stringify(requestData.postData).slice(0, 200))
+      : '';
+    return `${requestData.host}${requestData.pathname}${requestData.method}${queryStr}${postPreview}`;
+  }
+
+  // Get existing embeddings for a session to check what's already processed
+  async getExistingEmbeddings(sessionId) {
+    if (!this.db) await this.initDB();
+    
+    return new Promise((resolve, reject) => {
+      const store = this.db.transaction(['embeddings'], 'readonly').objectStore('embeddings');
+      const index = store.index('sessionId');
+      const request = index.getAll(sessionId);
+      
+      request.onsuccess = () => {
+        const records = request.result;
+        // Create a set of signatures for quick lookup
+        const signatures = new Set();
+        records.forEach(record => {
+          if (record.requestData) {
+            const sig = this.getRequestSignature(record.requestData);
+            signatures.add(sig);
+          }
+        });
+        resolve(signatures);
+      };
+      
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  // Process network call list and create embeddings in parallel batches
+  // Only creates embeddings for new calls that don't already have embeddings
+  async processNetworkCalls(apiKey, networkCalls, sessionId, progressCallback = null) {
     if (!this.db) await this.initDB();
 
-    // Clear old session data
-    await this.clearSession(sessionId);
+    // Get existing embeddings to avoid recreating
+    let existingSignatures = new Set();
+    try {
+      existingSignatures = await this.getExistingEmbeddings(sessionId);
+      console.log(`CAST: Found ${existingSignatures.size} existing embeddings for session ${sessionId}`);
+    } catch (error) {
+      console.warn('Error getting existing embeddings, will process all:', error);
+    }
 
     // Enhanced analytics pattern to catch all GA4 variations
     const analyticsPattern = /(google-analytics|analytics\.google|googletagmanager|gtag|gtm|segment|mixpanel|amplitude|hotjar|clarity|hubspot|adroll|facebook|meta|tiktok|linkedin|twitter|pinterest|reddit|quora|bing|microsoft|sentry|datadog|newrelic|fullstory|heap|pendo|optimizely|vwo|ab-tasty|doubleclick|googleadservices|googlesyndication)/i;
     const techStackPattern = /(vercel|netlify|cloudflare|aws|azure|gcp|fastly|akamai|cloudfront|contentful|wordpress|shopify|sanity|strapi|prismic|drupal|squarespace|wix|webflow|nextjs|react|vue|angular|svelte|nuxt|gatsby)/i;
 
-    let processed = 0;
-    const total = networkCalls.length;
-
+    // Filter and prepare requests for processing
+    // Only include requests that don't already have embeddings
+    const requestsToProcess = [];
     for (const call of networkCalls) {
       try {
         const hostname = call.host || new URL(call.url).hostname;
@@ -260,7 +456,7 @@ class CASTRAG {
         const isAnalytics = analyticsPattern.test(hostname) || analyticsPattern.test(pathname);
         const isTechStack = techStackPattern.test(hostname) || techStackPattern.test(pathname);
 
-        if (isAnalytics || isTechStack || processed < 5000) {
+        if (isAnalytics || isTechStack || requestsToProcess.length < 5000) {
           const requestData = {
             requestId: call.requestId || `${hostname}_${Date.now()}_${Math.random()}`,
             host: hostname,
@@ -271,24 +467,71 @@ class CASTRAG {
             postData: call.postData || null,
             pageUrl: call.pageUrl || null
           };
-
-          const embedding = await this.createEmbedding(apiKey, requestData);
-          await this.storeEmbedding(requestData, embedding, sessionId);
-          processed++;
-
-          if (processed % 10 === 0) {
-            await new Promise(resolve => setTimeout(resolve, 100));
+          
+          // Check if embedding already exists for this request
+          const signature = this.getRequestSignature(requestData);
+          if (!existingSignatures.has(signature)) {
+            requestsToProcess.push(requestData);
           }
         }
       } catch (e) {
-        console.error('Error processing request:', e);
+        console.error('Error preparing request:', e);
       }
     }
+    
+    const totalExisting = existingSignatures.size;
+    
+    if (requestsToProcess.length === 0) {
+      console.log('CAST: All network calls already have embeddings, skipping processing');
+      return { processed: totalExisting, total: networkCalls.length, new: 0, skipped: true };
+    }
+    
+    console.log(`CAST: Processing ${requestsToProcess.length} new network calls (${totalExisting} already have embeddings)`);
 
-    return { processed, total };
+    const totalNew = requestsToProcess.length;
+    const totalAll = totalExisting + totalNew;
+    let processed = 0;
+    const CONCURRENT_BATCH_SIZE = 15; // Process 15 embeddings in parallel
+
+    // Process in parallel batches
+    for (let i = 0; i < requestsToProcess.length; i += CONCURRENT_BATCH_SIZE) {
+      const batch = requestsToProcess.slice(i, i + CONCURRENT_BATCH_SIZE);
+      
+      // Process batch in parallel
+      const batchPromises = batch.map(async (requestData) => {
+        try {
+          const embedding = await this.createEmbedding(apiKey, requestData);
+          await this.storeEmbedding(requestData, embedding, sessionId);
+          processed++;
+          
+          // Report progress (include existing in total)
+          if (progressCallback) {
+            const totalProcessed = totalExisting + processed;
+            progressCallback({
+              processed: totalProcessed,
+              total: totalAll,
+              newProcessed: processed,
+              newTotal: totalNew,
+              percentage: Math.round((totalProcessed / totalAll) * 100),
+              current: requestData.host + requestData.pathname
+            });
+          }
+          
+          return { success: true, requestData };
+        } catch (error) {
+          console.error('Error processing request in batch:', error);
+          return { success: false, error, requestData };
+        }
+      });
+
+      // Wait for batch to complete
+      await Promise.allSettled(batchPromises);
+    }
+
+    return { processed: totalExisting + processed, total: totalAll, new: processed, skipped: false };
   }
 
-  // Retrieve relevant requests for analysis queries
+  // Retrieve relevant requests for analysis queries (parallel processing)
   async retrieveForAnalysis(apiKey, queries, sessionId) {
     const results = {
       analytics: [],
@@ -296,35 +539,58 @@ class CASTRAG {
       allRelevant: []
     };
 
-    // Create embeddings for each query
-    for (const query of queries) {
-      const queryEmbedding = await this.createEmbedding(apiKey, { 
-        host: query, 
-        pathname: '', 
-        method: 'GET' 
-      });
+    // Process all queries in parallel
+    const queryPromises = queries.map(async (query) => {
+      try {
+        const queryEmbedding = await this.createEmbedding(apiKey, { 
+          host: query, 
+          pathname: '', 
+          method: 'GET' 
+        });
 
-      // Increase results for analytics queries, use much lower threshold for analytics
-      const limit = query.toLowerCase().includes('analytics') ? 500 : 50; // Increased from 200 to 500
-      const similar = await this.searchSimilar(queryEmbedding, sessionId, limit);
-      
-      for (const item of similar) {
-        // Much lower threshold for analytics to capture ALL events
-        const isAnalytics = /(google-analytics|analytics\.google|googletagmanager|gtag|gtm|segment|mixpanel|amplitude|hotjar|clarity|hubspot|adroll|facebook|meta|tiktok)/i.test(item.host);
-        const threshold = isAnalytics ? 0.1 : 0.4; // Much lower threshold (0.1 instead of 0.25) for analytics
+        // Increase results for analytics queries, use much lower threshold for analytics
+        const limit = query.toLowerCase().includes('analytics') ? 500 : 50; // Increased from 200 to 500
+        const similar = await this.searchSimilar(queryEmbedding, sessionId, limit);
         
-        if (item.similarity > threshold) {
-          const isTechStack = /(vercel|netlify|cloudflare|aws|azure|gcp|contentful|wordpress|shopify|nextjs|react|vue)/i.test(item.host);
-
-          if (isAnalytics) {
-            results.analytics.push(item.requestData);
-          } else if (isTechStack) {
-            results.techStack.push(item.requestData);
-          }
+        const queryResults = {
+          analytics: [],
+          techStack: [],
+          allRelevant: []
+        };
+        
+        for (const item of similar) {
+          // Much lower threshold for analytics to capture ALL events
+          const isAnalytics = /(google-analytics|analytics\.google|googletagmanager|gtag|gtm|segment|mixpanel|amplitude|hotjar|clarity|hubspot|adroll|facebook|meta|tiktok)/i.test(item.host);
+          const threshold = isAnalytics ? 0.1 : 0.4; // Much lower threshold (0.1 instead of 0.25) for analytics
           
-          results.allRelevant.push(item.requestData);
+          if (item.similarity > threshold) {
+            const isTechStack = /(vercel|netlify|cloudflare|aws|azure|gcp|contentful|wordpress|shopify|nextjs|react|vue)/i.test(item.host);
+
+            if (isAnalytics) {
+              queryResults.analytics.push(item.requestData);
+            } else if (isTechStack) {
+              queryResults.techStack.push(item.requestData);
+            }
+            
+            queryResults.allRelevant.push(item.requestData);
+          }
         }
+        
+        return queryResults;
+      } catch (error) {
+        console.error(`Error processing query "${query}":`, error);
+        return { analytics: [], techStack: [], allRelevant: [] };
       }
+    });
+
+    // Wait for all queries to complete in parallel
+    const queryResultsArray = await Promise.all(queryPromises);
+    
+    // Merge results from all queries
+    for (const queryResult of queryResultsArray) {
+      results.analytics.push(...queryResult.analytics);
+      results.techStack.push(...queryResult.techStack);
+      results.allRelevant.push(...queryResult.allRelevant);
     }
 
     // Deduplicate - but for analytics, include query params and POST data in key

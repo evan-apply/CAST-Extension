@@ -3,6 +3,40 @@ const reportBox = document.getElementById("reportBox");
 const apiKeyInput = document.getElementById("apiKey");
 const depthInput = document.getElementById("crawlDepth");
 const pageLimitSelect = document.getElementById("pageLimit");
+const inputToggle = document.getElementById("inputToggle");
+const inputContent = document.getElementById("inputContent");
+const progressContainer = document.getElementById("progressContainer");
+const progressStage = document.getElementById("progressStage");
+const progressText = document.getElementById("progressText");
+const progressBarWrapper = document.getElementById("progressBarWrapper");
+const progressBar = document.getElementById("progressBar");
+const progressCurrent = document.getElementById("progressCurrent");
+const statsGrid = document.getElementById("statsGrid");
+const statNetwork = document.getElementById("statNetwork");
+const statTech = document.getElementById("statTech");
+const statAnalytics = document.getElementById("statAnalytics");
+
+let isAnalyzing = false;
+let statsInterval = null;
+
+function setCollapsibleState(expanded) {
+  if (!inputContent) return;
+  inputToggle.classList.toggle("open", expanded);
+  inputContent.classList.toggle("open", expanded);
+  if (expanded) {
+    inputContent.style.maxHeight = inputContent.scrollHeight + "px";
+  } else {
+    inputContent.style.maxHeight = "0px";
+  }
+}
+
+if (inputToggle && inputContent) {
+  setCollapsibleState(true);
+  inputToggle.addEventListener("click", () => {
+    const isOpen = inputContent.classList.contains("open");
+    setCollapsibleState(!isOpen);
+  });
+}
 
 // Restore state when popup opens
 function restoreCrawlState() {
@@ -71,10 +105,93 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       CAST_crawlActive: msg.active
     });
   }
+  
+  if (msg.type === "rag-progress") {
+    updateProgressBar(msg.progress);
+  }
+  
+  // Return false to indicate we're not sending an async response
+  return false;
 });
+
+// Progress bar elements
+function showStatsPanel(stats) {
+  if (isAnalyzing) return;
+  progressContainer.style.display = "block";
+  progressStage.textContent = "Data Stats";
+  progressText.textContent = stats?.updatedLabel || "Monitoring data";
+  progressBarWrapper.style.display = "none";
+  progressBar.style.width = "0%";
+  statsGrid.style.display = "grid";
+  if (stats) {
+    statNetwork.textContent = stats.networkCount ?? 0;
+    statTech.textContent = stats.techCount ?? 0;
+    statAnalytics.textContent = stats.analyticsCount ?? 0;
+    progressCurrent.textContent = "Ready for AI analysis.";
+  } else {
+    progressCurrent.textContent = "Fetching database stats…";
+  }
+}
+
+function refreshStats() {
+  if (isAnalyzing) return;
+  showStatsPanel(null);
+  chrome.runtime.sendMessage({ type: "get-db-stats" }, (res) => {
+    if (res && !res.error) {
+      const updatedLabel = `Updated ${new Date().toLocaleTimeString()}`;
+      showStatsPanel({
+        networkCount: res.networkCount,
+        techCount: res.techCount,
+        analyticsCount: res.analyticsCount,
+        updatedLabel
+      });
+    } else {
+      progressStage.textContent = "Data Stats";
+      progressText.textContent = "Unavailable";
+      progressBarWrapper.style.display = "none";
+      statsGrid.style.display = "grid";
+      progressCurrent.textContent = res?.error || "Unable to load stats.";
+    }
+  });
+}
+
+function updateProgressBar(progress) {
+  if (!progress) return;
+  
+  isAnalyzing = true;
+  progressContainer.style.display = "block";
+  statsGrid.style.display = "none";
+  progressBarWrapper.style.display = "block";
+  
+  progressStage.textContent = progress.stage || "Processing...";
+  progressText.textContent = `${progress.percentage || 0}%`;
+  progressBar.style.width = `${progress.percentage || 0}%`;
+  
+  if (progress.current) {
+    progressCurrent.textContent = progress.current;
+  } else {
+    progressCurrent.textContent = `${progress.processed || 0} of ${progress.total || 0} processed`;
+  }
+}
+
+// Poll for progress updates (in case popup was opened during processing)
+setInterval(() => {
+  chrome.storage.local.get(["CAST_ragProgress"], (res) => {
+    if (res.CAST_ragProgress && isAnalyzing) {
+      updateProgressBar(res.CAST_ragProgress);
+    }
+  });
+}, 700);
 
 // Restore state on popup open
 restoreCrawlState();
+refreshStats();
+if (statsInterval) clearInterval(statsInterval);
+statsInterval = setInterval(() => {
+  if (!isAnalyzing) {
+    refreshStats();
+  }
+}, 10000);
 
 function downloadCSV(filename, rows) {
   const csvContent = rows.map(r => r.map(v => `"${String(v ?? "").replace(/"/g,'""')}"`).join(",")).join("\n");
@@ -150,21 +267,99 @@ document.getElementById("downloadJSON").onclick = () => {
       statusEl.style.display = "block";
       return;
     }
-    const blob = new Blob([JSON.stringify(calls, null, 2)], { type: "application/json" });
+    
+    // Convert to CSV format
+    const csvRows = [["Page URL", "Request URL", "Method", "Host", "Pathname", "Query Params", "Has POST Data", "POST Data Preview"]];
+    
+    calls.forEach(call => {
+      const queryParamsStr = call.queryParams ? JSON.stringify(call.queryParams) : "";
+      const postDataPreview = call.postData 
+        ? (typeof call.postData === 'string' ? call.postData.substring(0, 500) : JSON.stringify(call.postData).substring(0, 500))
+        : "";
+      const hasPostData = call.postData ? "Yes" : "No";
+      
+      csvRows.push([
+        call.pageUrl || "",
+        call.url || "",
+        call.method || "GET",
+        call.host || "",
+        call.pathname || "",
+        queryParamsStr,
+        hasPostData,
+        postDataPreview
+      ]);
+    });
+    
+    // Convert to CSV string
+    const csvContent = csvRows.map(row => 
+      row.map(cell => {
+        // Escape quotes and wrap in quotes if contains comma, quote, or newline
+        const cellStr = String(cell || "").replace(/"/g, '""');
+        if (cellStr.includes(',') || cellStr.includes('"') || cellStr.includes('\n')) {
+          return `"${cellStr}"`;
+        }
+        return cellStr;
+      }).join(',')
+    ).join('\n');
+    
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "CAST_network_calls.json";
+    a.download = "CAST_network_calls.csv";
     a.click();
-    statusEl.textContent = "Raw network calls downloaded.";
+    statusEl.textContent = `Raw network calls downloaded (${calls.length} calls).`;
     statusEl.style.display = "block";
   });
 };
 
+document.getElementById("downloadTech").onclick = () => {
+  statusEl.textContent = "Preparing consolidated tech stack export…";
+  statusEl.style.display = "block";
+  chrome.runtime.sendMessage({ type: "export-tech-csv" }, (res) => {
+    if (!res || res.error) {
+      statusEl.textContent = res?.error || "Unable to export tech stack.";
+      return;
+    }
+    downloadCSV(res.filename || "CAST_tech_stack_consolidated.csv", res.rows || []);
+    statusEl.textContent = `Tech stack export ready (${(res.rows?.length || 0) - 1} items).`;
+    handleAnalysisComplete();
+  });
+};
+
+document.getElementById("downloadAnalytics").onclick = () => {
+  statusEl.textContent = "Preparing consolidated analytics export…";
+  statusEl.style.display = "block";
+  chrome.runtime.sendMessage({ type: "export-analytics-csv" }, (res) => {
+    if (!res || res.error) {
+      statusEl.textContent = res?.error || "Unable to export analytics events.";
+      return;
+    }
+    downloadCSV(res.filename || "CAST_analytics_events_consolidated.csv", res.rows || []);
+    statusEl.textContent = `Analytics events export ready (${(res.rows?.length || 0) - 1} events).`;
+    handleAnalysisComplete();
+  });
+};
+
+function handleAnalysisComplete() {
+  isAnalyzing = false;
+  progressBarWrapper.style.display = "none";
+  statsGrid.style.display = "grid";
+  progressBar.style.width = "0%";
+  chrome.storage.local.remove(["CAST_ragProgress"]);
+  refreshStats();
+}
+
 document.getElementById("runAI").onclick = () => {
-  statusEl.textContent = "Running AI network recon (slim)…";
+  statusEl.textContent = "Running AI network recon…";
   reportBox.textContent = "";
+  isAnalyzing = true;
+  progressBarWrapper.style.display = "block";
+  statsGrid.style.display = "none";
+  updateProgressBar({ stage: "Preparing batches…", percentage: 0, processed: 0, total: 100, current: "Initializing AI analysis" });
+  
   chrome.runtime.sendMessage({ type: "ai-summary" }, (res) => {
+    handleAnalysisComplete();
     if (!res) {
       statusEl.textContent = "No response from background.";
       return;

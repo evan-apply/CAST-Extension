@@ -1,5 +1,5 @@
-// Import RAG module
-importScripts('rag.js');
+// RAG module no longer needed - using direct batch processing instead
+// importScripts('rag.js');
 
 let maxDepth = 2; // Default depth, can be overridden by user input
 let pageLimit = null; // Optional max pages to visit per crawl
@@ -12,10 +12,15 @@ let crawlActive = false;
 let activeTabId = null;
 let origin = null;
 let currentTask = null;
-let rag = null;
 let currentSessionId = null;
 let pageTimeout = null; // Timeout for page loading
 const PAGE_LOAD_TIMEOUT = 15000; // 15 seconds max per page
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// IndexedDB for network calls persistence and AI results
+let networkCallsDB = null;
+const NETWORK_CALLS_DB_NAME = 'CAST_NetworkCalls_DB';
+const NETWORK_CALLS_DB_VERSION = 2; // Increment version to add new tables
 
 // Normalize URL to remove fragments and normalize query params for deduplication
 function normalizeUrl(url) {
@@ -31,6 +36,733 @@ function normalizeUrl(url) {
   } catch (e) {
     return url;
   }
+}
+
+// Initialize IndexedDB for network calls storage
+async function initNetworkCallsDB() {
+  if (networkCallsDB) return networkCallsDB;
+  
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(NETWORK_CALLS_DB_NAME, NETWORK_CALLS_DB_VERSION);
+    
+    request.onerror = () => {
+      console.error('Failed to open network calls IndexedDB:', request.error);
+      reject(request.error);
+    };
+    
+    request.onsuccess = () => {
+      networkCallsDB = request.result;
+      resolve(networkCallsDB);
+    };
+    
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      const oldVersion = event.oldVersion || 0;
+      
+      // Create object store for network calls
+      if (!db.objectStoreNames.contains('networkCalls')) {
+        const store = db.createObjectStore('networkCalls', { keyPath: 'id', autoIncrement: true });
+        store.createIndex('sessionId', 'sessionId', { unique: false });
+        store.createIndex('pageUrl', 'pageUrl', { unique: false });
+        store.createIndex('timestamp', 'timestamp', { unique: false });
+      }
+      
+      // Create result tables (version 2+)
+      if (oldVersion < 2) {
+        // Tech Stack Results table
+        if (!db.objectStoreNames.contains('techStackResults')) {
+          const techStore = db.createObjectStore('techStackResults', { keyPath: 'id', autoIncrement: true });
+          techStore.createIndex('sessionId', 'sessionId', { unique: false });
+          techStore.createIndex('batchId', 'batchId', { unique: false });
+          techStore.createIndex('timestamp', 'timestamp', { unique: false });
+        }
+        
+        // Analytics Events Results table
+        if (!db.objectStoreNames.contains('analyticsEventsResults')) {
+          const analyticsStore = db.createObjectStore('analyticsEventsResults', { keyPath: 'id', autoIncrement: true });
+          analyticsStore.createIndex('sessionId', 'sessionId', { unique: false });
+          analyticsStore.createIndex('batchId', 'batchId', { unique: false });
+          analyticsStore.createIndex('timestamp', 'timestamp', { unique: false });
+        }
+      }
+    };
+  });
+}
+
+// Save a network call to IndexedDB incrementally
+async function saveNetworkCallToDB(sessionId, pageUrl, event) {
+  if (!currentSessionId || !sessionId) return; // No active session
+  
+  try {
+    if (!networkCallsDB) {
+      await initNetworkCallsDB();
+    }
+    
+    if (event.method !== "Network.requestWillBeSent") return;
+    
+    const req = event.params?.request;
+    if (!req || !req.url) return;
+    
+    let urlObj;
+    try {
+      urlObj = new URL(req.url);
+    } catch (e) {
+      return; // Invalid URL, skip
+    }
+    
+    const networkCall = {
+      sessionId,
+      pageUrl,
+      url: req.url,
+      method: req.method || "GET",
+      host: urlObj.host,
+      pathname: urlObj.pathname,
+      queryParams: Object.fromEntries(urlObj.searchParams.entries()),
+      headerValues: req.headers || {},
+      postData: req.postData || null,
+      requestId: event.params?.requestId || null,
+      timestamp: Date.now()
+    };
+    
+    const transaction = networkCallsDB.transaction(['networkCalls'], 'readwrite');
+    const store = transaction.objectStore('networkCalls');
+    await store.add(networkCall);
+    
+  } catch (error) {
+    // Handle quota exceeded or other errors gracefully
+    if (error.name === 'QuotaExceededError') {
+      console.warn('IndexedDB quota exceeded, falling back to memory storage');
+    } else {
+      console.error('Error saving network call to IndexedDB:', error);
+    }
+    // Continue with memory storage as fallback
+  }
+}
+
+// Retrieve network calls from IndexedDB by session ID
+async function getNetworkCallsFromDB(sessionId) {
+  if (!sessionId) return { flat: [], byPage: {} };
+  
+  try {
+    if (!networkCallsDB) {
+      await initNetworkCallsDB();
+    }
+    
+    return new Promise((resolve, reject) => {
+      const transaction = networkCallsDB.transaction(['networkCalls'], 'readonly');
+      const store = transaction.objectStore('networkCalls');
+      const index = store.index('sessionId');
+      const request = index.getAll(sessionId);
+      
+      request.onsuccess = () => {
+        const calls = request.result;
+        const flat = [];
+        const byPage = {};
+        
+        for (const call of calls) {
+          flat.push({
+            pageUrl: call.pageUrl,
+            url: call.url,
+            method: call.method,
+            host: call.host,
+            pathname: call.pathname,
+            queryParams: call.queryParams || {},
+            headerValues: call.headerValues || {},
+            postData: call.postData || null,
+            requestId: call.requestId
+          });
+          
+          if (!byPage[call.pageUrl]) {
+            byPage[call.pageUrl] = [];
+          }
+          byPage[call.pageUrl].push({
+            pageUrl: call.pageUrl,
+            url: call.url,
+            method: call.method,
+            host: call.host,
+            pathname: call.pathname,
+            queryParams: call.queryParams || {},
+            headerValues: call.headerValues || {},
+            postData: call.postData || null,
+            requestId: call.requestId
+          });
+        }
+        
+        resolve({ flat, byPage });
+      };
+      
+      request.onerror = () => {
+        console.error('Error retrieving network calls from IndexedDB:', request.error);
+        reject(request.error);
+      };
+    });
+  } catch (error) {
+    console.error('Error accessing IndexedDB:', error);
+    return { flat: [], byPage: {} };
+  }
+}
+
+// Clear network calls for a session
+async function clearNetworkCallsForSession(sessionId) {
+  if (!sessionId || !networkCallsDB) return;
+  
+  try {
+    return new Promise((resolve, reject) => {
+      const transaction = networkCallsDB.transaction(['networkCalls'], 'readwrite');
+      const store = transaction.objectStore('networkCalls');
+      const index = store.index('sessionId');
+      const request = index.getAll(sessionId);
+      
+      request.onsuccess = () => {
+        const records = request.result;
+        const deletePromises = records.map(record => {
+          return new Promise((res, rej) => {
+            const delReq = store.delete(record.id);
+            delReq.onsuccess = () => res();
+            delReq.onerror = () => rej(delReq.error);
+          });
+        });
+        
+        Promise.all(deletePromises).then(resolve).catch(reject);
+      };
+      
+      request.onerror = () => reject(request.error);
+    });
+  } catch (error) {
+    console.error('Error clearing network calls:', error);
+  }
+}
+
+async function countStoreEntries(storeName, sessionId) {
+  if (!networkCallsDB) await initNetworkCallsDB();
+  if (!networkCallsDB.objectStoreNames.contains(storeName)) return 0;
+  
+  return new Promise((resolve, reject) => {
+    const transaction = networkCallsDB.transaction([storeName], 'readonly');
+    const store = transaction.objectStore(storeName);
+    if (sessionId && store.indexNames && store.indexNames.contains && store.indexNames.contains('sessionId')) {
+      const index = store.index('sessionId');
+      const request = index.count(sessionId);
+      request.onsuccess = () => resolve(request.result || 0);
+      request.onerror = () => reject(request.error);
+      return;
+    }
+    const request = store.count();
+    request.onsuccess = () => resolve(request.result || 0);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function fetchStoreRecords(storeName, sessionId) {
+  if (!networkCallsDB) await initNetworkCallsDB();
+  if (!networkCallsDB.objectStoreNames.contains(storeName)) return [];
+  
+  return new Promise((resolve, reject) => {
+    const transaction = networkCallsDB.transaction([storeName], 'readonly');
+    const store = transaction.objectStore(storeName);
+    let request;
+    if (sessionId && store.indexNames && store.indexNames.contains && store.indexNames.contains('sessionId')) {
+      const index = store.index('sessionId');
+      request = index.getAll(sessionId);
+    } else {
+      request = store.getAll();
+    }
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function getDatabaseStats(sessionId) {
+  try {
+    await initNetworkCallsDB();
+    const [networkCount, techCount, analyticsCount] = await Promise.all([
+      countStoreEntries('networkCalls', sessionId),
+      countStoreEntries('techStackResults', sessionId),
+      countStoreEntries('analyticsEventsResults', sessionId)
+    ]);
+    return { networkCount, techCount, analyticsCount };
+  } catch (error) {
+    console.error('Error fetching DB stats:', error);
+    throw error;
+  }
+}
+
+async function getActiveSessionId() {
+  if (currentSessionId) return currentSessionId;
+  return new Promise((resolve) => {
+    chrome.storage.local.get(["CAST_currentSessionId"], (res) => {
+      resolve(res?.CAST_currentSessionId || null);
+    });
+  });
+}
+
+function dedupeTechRecords(records = []) {
+  const map = new Map();
+  for (const item of records) {
+    const key = `${(item.name || '').toLowerCase()}|${(item.category || '').toLowerCase()}`;
+    if (!map.has(key)) {
+      map.set(key, {
+        name: item.name || '',
+        category: item.category || '',
+        confidence: Number(item.confidence) || 0,
+        evidence: new Set((item.evidence || []).filter(Boolean)),
+        occurrences: 1
+      });
+    } else {
+      const existing = map.get(key);
+      existing.confidence = Math.max(existing.confidence, Number(item.confidence) || 0);
+      (item.evidence || []).forEach((ev) => ev && existing.evidence.add(ev));
+      existing.occurrences += 1;
+    }
+  }
+  return Array.from(map.values()).map((entry) => ({
+    name: entry.name,
+    category: entry.category,
+    confidence: entry.confidence.toFixed(2),
+    occurrences: entry.occurrences,
+    evidence: Array.from(entry.evidence).join(' | ')
+  }));
+}
+
+function dedupeAnalyticsRecords(records = []) {
+  const map = new Map();
+  for (const item of records) {
+    const key = [
+      (item.provider || '').toLowerCase(),
+      (item.event_name || '').toLowerCase(),
+      (item.page_url || '').toLowerCase(),
+      (item.request_url || '').toLowerCase(),
+      (item.notes || '').toLowerCase()
+    ].join('|');
+    if (!map.has(key)) {
+      map.set(key, {
+        provider: item.provider || '',
+        event_name: item.event_name || '',
+        page_url: item.page_url || '',
+        request_url: item.request_url || '',
+        notes: item.notes || '',
+        occurrences: 1
+      });
+    } else {
+      const existing = map.get(key);
+      existing.occurrences += 1;
+    }
+  }
+  return Array.from(map.values());
+}
+
+async function buildTechStackExport(sessionId) {
+  const records = await fetchStoreRecords('techStackResults', sessionId);
+  if (!records.length) return [];
+  const deduped = dedupeTechRecords(records);
+  const rows = [["Technology", "Category", "Top Confidence", "Occurrences", "Evidence"]];
+  deduped.sort((a, b) => Number(b.confidence) - Number(a.confidence));
+  deduped.forEach((entry) => {
+    rows.push([entry.name, entry.category, entry.confidence, String(entry.occurrences), entry.evidence]);
+  });
+  return rows;
+}
+
+async function buildAnalyticsExport(sessionId) {
+  const records = await fetchStoreRecords('analyticsEventsResults', sessionId);
+  if (!records.length) return [];
+  const deduped = dedupeAnalyticsRecords(records);
+  const rows = [["Provider", "Event Name", "Page URL", "Request URL", "Notes", "Occurrences"]];
+async function consolidateStoredResults(sessionId) {
+  try {
+    const [techRecords, analyticsRecords] = await Promise.all([
+      fetchStoreRecords('techStackResults', sessionId),
+      fetchStoreRecords('analyticsEventsResults', sessionId)
+    ]);
+
+    const dedupedTech = dedupeTechRecords(techRecords);
+    const dedupedAnalytics = dedupeAnalyticsRecords(analyticsRecords);
+
+    // Clear existing stores before writing deduped results
+    if (networkCallsDB) {
+      const techTx = networkCallsDB.transaction(['techStackResults'], 'readwrite');
+      const techStore = techTx.objectStore('techStackResults');
+      techStore.clear();
+
+      const analyticsTx = networkCallsDB.transaction(['analyticsEventsResults'], 'readwrite');
+      const analyticsStore = analyticsTx.objectStore('analyticsEventsResults');
+      analyticsStore.clear();
+
+      // Reinsert consolidated tech records
+      const techTimestamp = Date.now();
+      const techPromises = dedupedTech.map(item => {
+        return new Promise((resolve, reject) => {
+          const request = techStore.add({
+            sessionId,
+            batchId: 'consolidated',
+            name: item.name,
+            category: item.category,
+            confidence: Number(item.confidence),
+            evidence: item.evidence ? item.evidence.split(' | ').filter(Boolean) : [],
+            occurrences: item.occurrences,
+            timestamp: techTimestamp
+          });
+          request.onsuccess = () => resolve();
+          request.onerror = () => reject(request.error);
+        });
+      });
+
+      // Reinsert consolidated analytics records
+      const analyticsTimestamp = Date.now();
+      const analyticsPromises = dedupedAnalytics.map(item => {
+        return new Promise((resolve, reject) => {
+          const request = analyticsStore.add({
+            sessionId,
+            batchId: 'consolidated',
+            provider: item.provider,
+            event_name: item.event_name,
+            page_url: item.page_url,
+            request_url: item.request_url,
+            notes: item.notes,
+            occurrences: item.occurrences,
+            timestamp: analyticsTimestamp
+          });
+          request.onsuccess = () => resolve();
+          request.onerror = () => reject(request.error);
+        });
+      });
+
+      await Promise.all([...techPromises, ...analyticsPromises]);
+    }
+  } catch (error) {
+    console.error('Error consolidating stored results:', error);
+  }
+}
+  deduped.sort((a, b) => b.occurrences - a.occurrences || a.provider.localeCompare(b.provider));
+  deduped.forEach((entry) => {
+    rows.push([
+      entry.provider,
+      entry.event_name,
+      entry.page_url,
+      entry.request_url,
+      entry.notes,
+      String(entry.occurrences)
+    ]);
+  });
+  return rows;
+}
+
+// Store AI analysis results in IndexedDB
+async function storeAIResults(sessionId, batchId, techStack, analyticsEvents) {
+  if (!networkCallsDB) await initNetworkCallsDB();
+  
+  const timestamp = Date.now();
+  
+  // Store tech stack results (batch insert for efficiency)
+  if (techStack && techStack.length > 0) {
+    const techTransaction = networkCallsDB.transaction(['techStackResults'], 'readwrite');
+    const techStore = techTransaction.objectStore('techStackResults');
+    
+    const techPromises = techStack.map(item => {
+      return new Promise((resolve, reject) => {
+        const request = techStore.add({
+          sessionId,
+          batchId,
+          name: item.name || '',
+          category: item.category || '',
+          confidence: item.confidence || 0,
+          evidence: item.evidence || [],
+          timestamp
+        });
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      });
+    });
+    
+    await Promise.all(techPromises);
+  }
+  
+  // Store analytics events results (batch insert for efficiency)
+  if (analyticsEvents && analyticsEvents.length > 0) {
+    const analyticsTransaction = networkCallsDB.transaction(['analyticsEventsResults'], 'readwrite');
+    const analyticsStore = analyticsTransaction.objectStore('analyticsEventsResults');
+    
+    const analyticsPromises = analyticsEvents.map(item => {
+      return new Promise((resolve, reject) => {
+        const request = analyticsStore.add({
+          sessionId,
+          batchId,
+          provider: item.provider || '',
+          event_name: item.event_name || null,
+          page_url: item.page_url || null,
+          request_url: item.request_url || null,
+          notes: item.notes || null,
+          timestamp
+        });
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      });
+    });
+    
+    await Promise.all(analyticsPromises);
+  }
+}
+
+// Build network payload for a batch of calls (optimized for Gemini)
+function buildBatchPayload(networkCalls, maxTokens = 700000) {
+  const pages = [];
+  const pageMap = new Map();
+  const MAX_POST_BODY_SIZE = 8000;
+  const MAX_ANALYTICS_POST_BODY_SIZE = 20000;
+  const analyticsPattern = /(google-analytics|analytics\.google|googletagmanager|gtag|gtm|segment|mixpanel|amplitude|hotjar|clarity|hubspot)/i;
+  
+  let estimatedTokens = 0;
+  const baseOverhead = 2000; // System prompt overhead
+  const summary = {
+    totalCalls: 0,
+    analyticsCalls: 0,
+    otherCalls: 0
+  };
+  
+  for (const call of networkCalls) {
+    let callSize = 0;
+    callSize += (call.url || '').length;
+    callSize += (call.method || '').length;
+    callSize += JSON.stringify(call.queryParams || {}).length;
+    
+    // Truncate POST data if needed
+    let postData = call.postData;
+    const isAnalytics = analyticsPattern.test(call.host || '');
+    const maxPostSize = isAnalytics ? MAX_ANALYTICS_POST_BODY_SIZE : MAX_POST_BODY_SIZE;
+    
+    if (postData && typeof postData === 'string' && postData.length > maxPostSize) {
+      postData = postData.slice(0, maxPostSize) + '...[truncated]';
+    } else if (postData && typeof postData !== 'string') {
+      const stringified = JSON.stringify(postData);
+      if (stringified.length > maxPostSize) {
+        postData = stringified.slice(0, maxPostSize) + '...[truncated]';
+      } else {
+        postData = stringified;
+      }
+    }
+    callSize += (postData || '').length;
+    
+    const callTokens = Math.ceil(callSize / 4);
+    
+    if (estimatedTokens + callTokens + baseOverhead > maxTokens && pages.length > 0) {
+      break;
+    }
+    
+    const pageUrl = call.pageUrl || 'unknown';
+    if (!pageMap.has(pageUrl)) {
+      pageMap.set(pageUrl, {
+        pageUrl,
+        requests: []
+      });
+    }
+    
+    const page = pageMap.get(pageUrl);
+    page.requests.push({
+      url: call.url,
+      method: call.method || 'GET',
+      host: call.host,
+      pathname: call.pathname,
+      queryParams: call.queryParams || {},
+      postData: postData || null
+    });
+    
+    estimatedTokens += callTokens;
+    summary.totalCalls++;
+    if (isAnalytics) {
+      summary.analyticsCalls++;
+    } else {
+      summary.otherCalls++;
+    }
+  }
+  
+  const pagesArray = Array.from(pageMap.values());
+  const payload = { pages: pagesArray, summary };
+  payload.summary.totalCalls = pagesArray.reduce((acc, page) => acc + page.requests.length, 0);
+  return { ...payload, estimatedTokens };
+}
+
+function estimateTokensForPayload(payload) {
+  return Math.ceil(JSON.stringify(payload).length / 4);
+}
+
+function updatePayloadSummary(payload) {
+  const summary = {
+    totalCalls: 0,
+    analyticsCalls: 0,
+    otherCalls: 0
+  };
+  const analyticsPattern = /(google-analytics|analytics\.google|googletagmanager|gtag|gtm|segment|mixpanel|amplitude|hotjar|clarity|hubspot)/i;
+  for (const page of payload.pages || []) {
+    for (const request of page.requests || []) {
+      summary.totalCalls++;
+      if (analyticsPattern.test(request.host || '')) {
+        summary.analyticsCalls++;
+      } else {
+        summary.otherCalls++;
+      }
+    }
+  }
+  payload.summary = summary;
+}
+
+function trimPayloadToLimit(payload, maxTokens) {
+  let pages = [...payload.pages];
+  if (pages.length === 0) return payload;
+  
+  let trimmedPayload = { ...payload, pages };
+  let tokens = estimateTokensForPayload(trimmedPayload);
+  if (tokens <= maxTokens) return trimmedPayload;
+  
+  // Remove pages from the end until within limit
+  while (pages.length > 1 && tokens > maxTokens) {
+    pages.pop();
+    trimmedPayload = { ...payload, pages };
+    tokens = estimateTokensForPayload(trimmedPayload);
+  }
+  
+  // If still too large, trim requests within the last page
+  if (tokens > maxTokens && pages.length === 1) {
+    const page = { ...pages[0] };
+    while (page.requests.length > 1 && tokens > maxTokens) {
+      page.requests.pop();
+      trimmedPayload = { ...payload, pages: [page] };
+      tokens = estimateTokensForPayload(trimmedPayload);
+    }
+    trimmedPayload = { ...payload, pages: [page] };
+  }
+  
+  updatePayloadSummary(trimmedPayload);
+  return trimmedPayload;
+}
+
+// Process network calls in batches and store results
+async function processBatchesDirect(apiKey, networkCalls, sessionId, progressCallback) {
+  if (!networkCallsDB) await initNetworkCallsDB();
+  
+  const MAX_TOKENS_PER_BATCH = 600000; // Conservative limit below 1M
+  const batches = [];
+  let currentBatch = [];
+  let currentBatchTokens = 0;
+  const baseOverhead = 2000; // System prompt overhead
+  
+  // Split network calls into batches based on token estimation
+  for (const call of networkCalls) {
+    // Estimate tokens for this call (more accurate)
+    let callSize = 0;
+    callSize += (call.url || '').length;
+    callSize += (call.method || '').length;
+    callSize += JSON.stringify(call.queryParams || {}).length;
+    callSize += (call.postData ? (typeof call.postData === 'string' ? call.postData : JSON.stringify(call.postData)) : '').length;
+    const callTokens = Math.ceil(callSize / 4);
+    
+    // Check if adding this call would exceed limit
+    if (currentBatchTokens + callTokens + baseOverhead > MAX_TOKENS_PER_BATCH && currentBatch.length > 0) {
+      // Save current batch and start new one
+      batches.push([...currentBatch]);
+      currentBatch = [call];
+      currentBatchTokens = callTokens;
+    } else {
+      currentBatch.push(call);
+      currentBatchTokens += callTokens;
+    }
+  }
+  
+  // Add final batch
+  if (currentBatch.length > 0) {
+    batches.push(currentBatch);
+  }
+  
+  console.log(`CAST: Split ${networkCalls.length} calls into ${batches.length} batches`);
+  
+  // Process each batch
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i];
+    const batchId = `batch_${i + 1}_${Date.now()}`;
+    
+    try {
+      // Build payload for this batch
+      let payload = buildBatchPayload(batch, MAX_TOKENS_PER_BATCH);
+      let payloadTokens = payload.estimatedTokens || estimateTokensForPayload(payload);
+      
+      if (payload.pages.length === 0) {
+        console.warn(`CAST: Batch ${i + 1} has no pages, skipping`);
+        continue;
+      }
+      
+      if (payloadTokens > MAX_TOKENS_PER_BATCH) {
+        console.warn(`CAST: Batch ${i + 1} payload exceeds token limit (${payloadTokens}), trimming...`);
+        payload = trimPayloadToLimit(payload, MAX_TOKENS_PER_BATCH);
+        payloadTokens = estimateTokensForPayload(payload);
+        if (payloadTokens > MAX_TOKENS_PER_BATCH) {
+          console.error(`CAST: Unable to trim batch ${i + 1} below token limit, skipping`);
+          continue;
+        }
+      }
+      
+      // Call Gemini
+      const result = await callGemini(apiKey, payload);
+      
+      // Store results
+      if (result.tech_stack && result.analytics_events) {
+        await storeAIResults(sessionId, batchId, result.tech_stack, result.analytics_events);
+        console.log(`CAST: Batch ${i + 1}/${batches.length} processed - ${result.tech_stack.length} tech items, ${result.analytics_events.length} analytics events`);
+        
+        if (progressCallback) {
+          progressCallback({
+            processed: i + 1,
+            total: batches.length,
+            percentage: Math.round(((i + 1) / batches.length) * 100),
+            current: `Completed batch ${i + 1}/${batches.length}`,
+            stage: 'AI Analysis'
+          });
+        }
+      } else {
+        console.warn(`CAST: Batch ${i + 1} returned no results`);
+      }
+    } catch (error) {
+      console.error(`CAST: Error processing batch ${i + 1}:`, error);
+      // Continue with next batch
+    }
+  }
+  
+  if (progressCallback) {
+    progressCallback({
+      processed: batches.length,
+      total: batches.length,
+      percentage: 100,
+      current: 'AI analysis complete',
+      stage: 'AI Analysis'
+    });
+  }
+  
+  return { batchesProcessed: batches.length, totalCalls: networkCalls.length };
+}
+
+// Get all stored results for a session
+async function getAllStoredResults(sessionId) {
+  if (!networkCallsDB) await initNetworkCallsDB();
+  
+  // Get tech stack results
+  const techResults = await new Promise((resolve, reject) => {
+    const transaction = networkCallsDB.transaction(['techStackResults'], 'readonly');
+    const store = transaction.objectStore('techStackResults');
+    const index = store.index('sessionId');
+    const request = index.getAll(sessionId);
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error);
+  });
+  
+  // Get analytics events results
+  const analyticsResults = await new Promise((resolve, reject) => {
+    const transaction = networkCallsDB.transaction(['analyticsEventsResults'], 'readonly');
+    const store = transaction.objectStore('analyticsEventsResults');
+    const index = store.index('sessionId');
+    const request = index.getAll(sessionId);
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error);
+  });
+  
+  return { techStack: techResults, analyticsEvents: analyticsResults };
 }
 
 // Helper to notify popup of status changes
@@ -68,18 +800,60 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       : 2;
     pageLimit = typeof msg.pageLimit === 'number' && msg.pageLimit > 0 ? msg.pageLimit : null;
     startCrawl();
+    // No response needed for crawl-start, popup doesn't wait for it
+    return false;
+  }
+
+  if (msg.type === "get-db-stats") {
+    (async () => {
+      try {
+        const stats = await getDatabaseStats();
+        sendResponse(stats);
+      } catch (error) {
+        sendResponse({ error: error.message || String(error) });
+      }
+    })();
     return true;
   }
 
   if (msg.type === "page-scanned") {
     handlePageScanned(msg);
-    return true;
+    // No response needed for page-scanned
+    return false;
   }
 
   if (msg.type === "get-report") {
-    const { flat: networkCalls } = collectNetworkCalls();
-    sendResponse({ networkCalls });
-    return false;
+    // Restore session ID if not set (e.g., after extension reload)
+    if (!currentSessionId) {
+      chrome.storage.local.get(['CAST_currentSessionId'], async (res) => {
+        if (res.CAST_currentSessionId) {
+          currentSessionId = res.CAST_currentSessionId;
+        }
+        // Initialize IndexedDB if needed
+        try {
+          await initNetworkCallsDB();
+        } catch (error) {
+          console.warn('Failed to initialize IndexedDB:', error);
+        }
+        // Use async to get from IndexedDB
+        try {
+          const { flat: networkCalls } = await collectNetworkCalls();
+          sendResponse({ networkCalls });
+        } catch (error) {
+          console.error('Error collecting network calls:', error);
+          sendResponse({ networkCalls: [] });
+        }
+      });
+    } else {
+      // Use async to get from IndexedDB
+      collectNetworkCalls().then(({ flat: networkCalls }) => {
+        sendResponse({ networkCalls });
+      }).catch(error => {
+        console.error('Error collecting network calls:', error);
+        sendResponse({ networkCalls: [] });
+      });
+    }
+    return true; // Indicate async response - keep channel open
   }
   
   if (msg.type === "get-crawl-status") {
@@ -90,79 +864,238 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       visited: visited.size,
       queued: queue.length
     });
+    return false; // Synchronous response, no need to keep channel open
+  }
+
+  if (msg.type === "get-db-stats") {
+    (async () => {
+      try {
+        const sessionId = await getActiveSessionId();
+        const stats = await getDatabaseStats(sessionId);
+        sendResponse(stats);
+      } catch (error) {
+        sendResponse({ error: error.message || String(error) });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === "export-tech-csv") {
+    (async () => {
+      try {
+        const sessionId = await getActiveSessionId();
+        if (!sessionId) {
+          sendResponse({ error: "No session data available. Run a crawl first." });
+          return;
+        }
+        const rows = await buildTechStackExport(sessionId);
+        if (!rows.length) {
+          sendResponse({ error: "No tech stack records found. Run AI analysis first." });
+          return;
+        }
+        sendResponse({ rows, filename: "CAST_tech_stack_consolidated.csv" });
+      } catch (error) {
+        console.error('Tech stack export error:', error);
+        sendResponse({ error: error.message || String(error) });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === "export-analytics-csv") {
+    (async () => {
+      try {
+        const sessionId = await getActiveSessionId();
+        if (!sessionId) {
+          sendResponse({ error: "No session data available. Run a crawl first." });
+          return;
+        }
+        const rows = await buildAnalyticsExport(sessionId);
+        if (!rows.length) {
+          sendResponse({ error: "No analytics events found. Run AI analysis first." });
+          return;
+        }
+        sendResponse({ rows, filename: "CAST_analytics_events_consolidated.csv" });
+      } catch (error) {
+        console.error('Analytics export error:', error);
+        sendResponse({ error: error.message || String(error) });
+      }
+    })();
     return true;
   }
 
   if (msg.type === "ai-summary") {
-    chrome.storage.local.get(["geminiApiKey"], async (res) => {
+    chrome.storage.local.get(["geminiApiKey", "CAST_currentSessionId"], async (res) => {
       const apiKey = res.geminiApiKey;
       if (!apiKey) {
         sendResponse({ error: "No Gemini API key saved. Please save it first." });
         return;
       }
+      
+      // Restore session ID if not set (e.g., after extension reload)
+      if (!currentSessionId && res.CAST_currentSessionId) {
+        currentSessionId = res.CAST_currentSessionId;
+      }
+      
+      // Initialize IndexedDB if needed
       try {
-        const { flat: networkCalls, byPage: networkCallsByPage } = collectNetworkCalls();
+        await initNetworkCallsDB();
+      } catch (error) {
+        console.warn('Failed to initialize IndexedDB:', error);
+      }
+      
+      try {
+        // Get network calls from IndexedDB (persistent) or memory (fallback)
+        const { flat: networkCalls } = await collectNetworkCalls();
         if (!networkCalls.length) {
           sendResponse({ error: "No network calls captured yet. Run a crawl first." });
           return;
         }
         
-        // Use RAG for intelligent retrieval
-        if (!rag) {
-          rag = new CASTRAG();
-          await rag.initDB();
-        }
-
-        // Generate session ID if not exists
+        // Use existing session ID or create new one if none exists
         if (!currentSessionId) {
           currentSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          chrome.storage.local.set({ CAST_currentSessionId: currentSessionId });
         }
 
-        // Process network calls and create embeddings
-        const processResult = await rag.processNetworkCalls(apiKey, networkCalls, currentSessionId);
+        // Check if we already have results stored
+        const existingResults = await getAllStoredResults(currentSessionId);
+        const hasExistingResults = existingResults.techStack.length > 0 || existingResults.analyticsEvents.length > 0;
         
-        // Retrieve relevant requests using semantic search
-        // Add more specific queries for GA4 and event tracking
-        // More queries to ensure we capture all analytics events
-        const queries = [
-          "google analytics 4 GA4 events tracking",
-          "analytics tracking events button clicks",
-          "analytics scroll events user interactions",
-          "analytics form submission events",
-          "analytics page view events",
-          "analytics custom events tracking",
-          "tech stack framework hosting",
-          "google analytics gtm segment",
-          "hubspot form submission",
-          "CDN hosting provider",
-          "event tracking user interactions",
-          "analytics collect gtag events",
-          "analytics measurement protocol",
-          "analytics event parameters"
-        ];
+        // Progress callback
+        const progressCallback = (progress) => {
+          chrome.storage.local.set({
+            CAST_ragProgress: {
+              processed: progress.processed,
+              total: progress.total,
+              percentage: progress.percentage,
+              current: progress.current,
+              stage: progress.stage || 'AI Analysis'
+            }
+          });
+          
+          try {
+            chrome.runtime.sendMessage({
+              type: 'rag-progress',
+              progress: {
+                processed: progress.processed,
+                total: progress.total,
+                percentage: progress.percentage,
+                current: progress.current,
+                stage: progress.stage || 'AI Analysis'
+              }
+            }).catch(() => {});
+          } catch (e) {}
+        };
         
-        const retrieved = await rag.retrieveForAnalysis(apiKey, queries, currentSessionId);
+        // Check which network calls have already been processed
+        // Get all processed batch IDs to track what's been done
+        const processedBatches = await new Promise((resolve) => {
+          const transaction = networkCallsDB.transaction(['techStackResults'], 'readonly');
+          const store = transaction.objectStore('techStackResults');
+          const index = store.index('sessionId');
+          const request = index.getAll(currentSessionId);
+          request.onsuccess = () => {
+            const batches = new Set((request.result || []).map(r => r.batchId).filter(Boolean));
+            resolve(batches);
+          };
+          request.onerror = () => resolve(new Set());
+        });
         
-        // Don't limit analytics - we want ALL analytics events
-        // Only limit tech stack and other requests
-        // retrieved.analytics = retrieved.analytics.slice(0, 200); // REMOVED - keep all analytics
-        retrieved.techStack = retrieved.techStack.slice(0, 200);
-        retrieved.allRelevant = retrieved.allRelevant.slice(0, 300);
+        // For now, always process all calls (deduplication happens at storage level)
+        // In future, we could track which calls were in which batch for incremental processing
+        const needsProcessing = !hasExistingResults || processedBatches.size === 0;
         
-        // Build optimized payload from retrieved data
-        let payload = buildRAGPayload(retrieved, networkCallsByPage);
-        
-        // Final safety check - if still too large, use filtered version
-        const payloadStr = JSON.stringify(payload);
-        const estimatedTokens = Math.ceil(payloadStr.length / 4);
-        if (estimatedTokens > 700000) {
-          console.warn('Payload still too large after RAG, using filtered version');
-          payload = buildNetworkPayloadFromCalls(networkCallsByPage, { maxPages: 15, maxCallsPerPage: 200 });
+        if (needsProcessing) {
+          // Pre-filter network calls (remove static assets)
+          const staticAssetPattern = /\.(jpg|jpeg|png|gif|svg|webp|ico|woff|woff2|ttf|eot|css|js|map|pdf|zip|mp4|mp3|webm|ogg)(\?|$)/i;
+          const filteredCalls = networkCalls.filter(call => {
+            const url = call.url || '';
+            // Filter out static assets
+            if (staticAssetPattern.test(url)) {
+              return false;
+            }
+            return true; // Keep everything else
+          });
+          
+          console.log(`CAST: Processing ${filteredCalls.length} network calls in batches`);
+          
+          // Update progress
+          chrome.storage.local.set({
+            CAST_ragProgress: {
+              processed: 0,
+              total: filteredCalls.length,
+              percentage: 0,
+              current: 'Preparing batches...',
+              stage: 'AI Analysis'
+            }
+          });
+          
+          // Process in batches and store results
+          await processBatchesDirect(apiKey, filteredCalls, currentSessionId, progressCallback);
+        } else {
+          console.log('CAST: Using existing results from previous analysis');
+          chrome.storage.local.set({
+            CAST_ragProgress: {
+              processed: 100,
+              total: 100,
+              percentage: 100,
+              current: 'Using existing results',
+              stage: 'Complete'
+            }
+          });
         }
         
-        const aiResult = await callGemini(apiKey, payload);
-        sendResponse(aiResult);
+        // Get all stored results
+        // Consolidate stored results to remove duplicates before final retrieval
+        await consolidateStoredResults(currentSessionId);
+        const allResults = await getAllStoredResults(currentSessionId);
+        
+        // Deduplicate and format results
+        const techStackMap = new Map();
+        for (const item of allResults.techStack) {
+          const key = `${item.name}_${item.category}`;
+          if (!techStackMap.has(key) || techStackMap.get(key).confidence < item.confidence) {
+            techStackMap.set(key, {
+              name: item.name,
+              category: item.category,
+              confidence: item.confidence,
+              evidence: item.evidence
+            });
+          }
+        }
+        
+        const analyticsMap = new Map();
+        for (const item of allResults.analyticsEvents) {
+          const key = `${item.provider}_${item.event_name}_${item.request_url}`;
+          if (!analyticsMap.has(key)) {
+            analyticsMap.set(key, {
+              provider: item.provider,
+              event_name: item.event_name,
+              page_url: item.page_url,
+              request_url: item.request_url,
+              notes: item.notes
+            });
+          }
+        }
+        
+        // Create summary
+        const techStack = Array.from(techStackMap.values());
+        const analyticsEvents = Array.from(analyticsMap.values());
+        
+        const summary = `# CAST Analysis Summary\n\n` +
+          `**Tech Stack Found:** ${techStack.length} technologies\n` +
+          `**Analytics Events Found:** ${analyticsEvents.length} events\n\n` +
+          `Analysis completed using direct batch processing (no RAG).`;
+        
+        // Return results in expected format
+        sendResponse({
+          summary_markdown: summary,
+          tech_stack: techStack,
+          analytics_events: analyticsEvents
+        });
       } catch (e) {
+        console.error('Error in AI analysis:', e);
         sendResponse({ error: e.message || String(e) });
       }
     });
@@ -172,8 +1105,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return false;
 });
 
-function startCrawl() {
-  chrome.tabs.query({ active: true, lastFocusedWindow: true }, ([tab]) => {
+async function startCrawl() {
+  chrome.tabs.query({ active: true, lastFocusedWindow: true }, async ([tab]) => {
     if (!tab || !tab.url || !tab.url.startsWith("http")) {
       return;
     }
@@ -189,34 +1122,54 @@ function startCrawl() {
     allDiscoveredLinks = new Set([seedUrl]); // Initialize with seed URL
     crawlActive = true;
     currentTask = null;
-    
-    // Store crawl state for popup persistence
-    chrome.storage.local.set({
-      CAST_crawlActive: true,
-      CAST_crawlStatus: `Starting crawl (depth ${maxDepth}, limit ${pageLimit ? pageLimit : 'all'})… browser will navigate within this domain.`,
-      CAST_crawlStartTime: Date.now(),
-      CAST_crawlDepth: maxDepth,
-      CAST_pageLimit: pageLimit ?? "all"
-    });
-    
-    // Notify popup if open
-    const startStatus = `Starting crawl (depth ${maxDepth}, limit ${pageLimit ? pageLimit : 'all'})… browser will navigate within this domain.`;
-    notifyPopupStatus(startStatus);
-    
-    // Initialize new RAG session
-    currentSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    if (rag) {
-      rag.clearSession(currentSessionId).catch(console.error);
-    }
 
-    // Clear submitted forms and searched inputs for new crawl session
-    chrome.storage.local.remove(['CAST_submittedForms', 'CAST_searchedInputs']);
-
-    // Clear any existing timeout
-    if (pageTimeout) {
-      clearTimeout(pageTimeout);
-      pageTimeout = null;
+    // Initialize IndexedDB for network calls persistence
+    try {
+      await initNetworkCallsDB();
+    } catch (error) {
+      console.warn('Failed to initialize IndexedDB, will use memory storage only:', error);
     }
+    
+    // Restore or create session ID
+    chrome.storage.local.get(['CAST_currentSessionId'], async (res) => {
+      const oldSessionId = res.CAST_currentSessionId;
+      
+      // Create new session ID
+      currentSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      // Clear old session data if starting a new crawl (not a resume)
+      if (oldSessionId && oldSessionId !== currentSessionId) {
+        try {
+          await clearNetworkCallsForSession(oldSessionId);
+        } catch (error) {
+          console.warn('Failed to clear old session data:', error);
+        }
+      }
+      
+      // Store new session ID for persistence across reloads
+      chrome.storage.local.set({ CAST_currentSessionId: currentSessionId });
+      
+      // Store crawl state for popup persistence
+      chrome.storage.local.set({
+        CAST_crawlActive: true,
+        CAST_crawlStatus: `Starting crawl (depth ${maxDepth}, limit ${pageLimit ? pageLimit : 'all'})… browser will navigate within this domain.`,
+        CAST_crawlStartTime: Date.now(),
+        CAST_crawlDepth: maxDepth,
+        CAST_pageLimit: pageLimit ?? "all"
+      });
+      
+      // Notify popup if open
+      const startStatus = `Starting crawl (depth ${maxDepth}, limit ${pageLimit ? pageLimit : 'all'})… browser will navigate within this domain.`;
+      notifyPopupStatus(startStatus);
+      
+      // Clear submitted forms and searched inputs for new crawl session
+      chrome.storage.local.remove(['CAST_submittedForms', 'CAST_searchedInputs']);
+
+      // Clear any existing timeout
+      if (pageTimeout) {
+        clearTimeout(pageTimeout);
+        pageTimeout = null;
+      }
 
       chrome.debugger.attach({ tabId: tab.id }, "1.3", (error) => {
       if (error) {
@@ -247,8 +1200,9 @@ function startCrawl() {
       setTimeout(() => {
         processNext();
       }, 500);
-    });
-  });
+      });
+    }); // End chrome.storage.local.get
+  }); // End chrome.tabs.query
 }
 
 function processNext() {
@@ -305,7 +1259,7 @@ function processNext() {
     setTimeout(() => processNext(), 0);
     return;
   }
-  
+
   let normalizedUrl;
   try {
     normalizedUrl = normalizeUrl(task.url);
@@ -594,7 +1548,7 @@ function handlePageScanned(msg) {
 
   // Wait briefly to capture analytics events before moving to next page
   setTimeout(() => {
-    processNext();
+  processNext();
   }, 400); // Reduced from 800ms to 400ms - faster page transitions
 }
 
@@ -611,6 +1565,13 @@ chrome.debugger.onEvent.addListener((src, method, params) => {
       network: []
     };
     logs[url].network.push({ method, params });
+    
+    // Save to IndexedDB incrementally (non-blocking)
+    if (currentSessionId) {
+      saveNetworkCallToDB(currentSessionId, url, { method, params }).catch(err => {
+        // Error already logged in saveNetworkCallToDB, continue silently
+      });
+    }
   });
 });
 
@@ -722,7 +1683,7 @@ function buildRAGPayload(retrieved, networkCallsByPage) {
     const pageUrl = request.pageUrl || 'unknown';
     if (!pageMap.has(pageUrl)) {
       pageMap.set(pageUrl, {
-        pageUrl,
+      pageUrl,
         requests: [],
         responses: []
       });
@@ -765,7 +1726,21 @@ function buildRAGPayload(retrieved, networkCallsByPage) {
 
   return payload;
 }
-function collectNetworkCalls() {
+// Collect network calls from IndexedDB (preferred) or memory (fallback)
+async function collectNetworkCalls() {
+  // Try to get from IndexedDB first (persistent storage)
+  if (currentSessionId) {
+    try {
+      const dbResult = await getNetworkCallsFromDB(currentSessionId);
+      if (dbResult.flat.length > 0) {
+        return dbResult; // Return IndexedDB data if available
+      }
+    } catch (error) {
+      console.warn('Failed to retrieve from IndexedDB, falling back to memory:', error);
+    }
+  }
+  
+  // Fallback to in-memory logs (for backward compatibility and active crawls)
   const flat = [];
   const byPage = {};
   for (const [pageUrl, entry] of Object.entries(logs)) {
@@ -803,30 +1778,30 @@ function collectNetworkCalls() {
 
 // ---- Gemini 2.5 Flash call ----
 
-async function callGemini(apiKey, networkPayload) {
+async function callGemini(apiKey, networkPayload, attempt = 1) {
+  const MAX_RETRIES = 3;
   const endpoint =
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" +
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent?key=" +
     encodeURIComponent(apiKey);
 
   const systemPrompt = `
 You are CAST, a web reconnaissance analyst.
 
-You will receive JSON data from a RAG (Retrieval-Augmented Generation) system that has semantically retrieved the most relevant network requests.
+You will receive JSON data containing network requests captured from a website crawl. This is a batch of network traffic data.
 
 The data includes:
-- Analytics requests: Semantically retrieved requests from Google Analytics, GTM, Segment, Mixpanel, HubSpot, etc. with FULL data
-- Tech stack requests: Semantically retrieved requests from CDN, hosting, CMS, frameworks with FULL data
-- All relevant requests: Other requests that are semantically similar to analytics/tech stack queries
+- Network requests organized by page URL
+- Each request includes: url, method, host, pathname, queryParams, postData
+- Analytics requests: Google Analytics, GTM, Segment, Mixpanel, HubSpot, etc. with FULL data
+- Tech stack requests: CDN, hosting, CMS, frameworks with FULL data
+- All other network requests
 
 Each request includes:
-- host, pathname, method, requestId, pageUrl
+- url, method, host, pathname, pageUrl
 - query parameter KEYS and VALUES (full data)
-- header KEYS and VALUES (full data)
-- hasBody flag
 - postData (full POST body when present)
-- Response data (status, mimeType, headers) when available, matched by requestId
 
-The RAG system has already filtered and retrieved the most relevant requests using semantic search, so you can focus on comprehensive analysis without worrying about missing critical data. Extract ALL analytics events and complete tech stack information from this intelligently retrieved dataset.
+This is a batch of network traffic. Analyze ALL requests in this batch comprehensively. Extract ALL analytics events and complete tech stack information from this data.
 
 From ONLY that evidence, you must infer:
 
@@ -910,40 +1885,51 @@ Rules:
     ]
   };
 
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error("Gemini API error: " + text);
-  }
-
-  const data = await res.json();
-  const cand = data.candidates && data.candidates[0];
-  if (!cand || !cand.content || !cand.content.parts) {
-    throw new Error("No content returned from Gemini.");
-  }
-
-  const text = cand.content.parts.map((p) => p.text || "").join("");
-  
-  // Strip markdown code blocks if present (Gemini sometimes wraps JSON in ```json ... ```)
-  let cleanedText = text.trim();
-  if (cleanedText.startsWith("```")) {
-    // Remove opening ```json or ```
-    cleanedText = cleanedText.replace(/^```(?:json)?\s*\n?/, "");
-    // Remove closing ```
-    cleanedText = cleanedText.replace(/\n?```\s*$/, "");
-    cleanedText = cleanedText.trim();
-  }
-  
-  let parsed;
   try {
-    parsed = JSON.parse(cleanedText);
-  } catch (e) {
-    throw new Error("Failed to parse Gemini JSON: " + cleanedText.slice(0, 200));
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error("Gemini API error: " + text);
+    }
+
+    const data = await res.json();
+    const cand = data.candidates && data.candidates[0];
+    if (!cand || !cand.content || !cand.content.parts) {
+      throw new Error("No content returned from Gemini.");
+    }
+
+    const text = cand.content.parts.map((p) => p.text || "").join("");
+    
+    // Strip markdown code blocks if present (Gemini sometimes wraps JSON in ```json ... ```)
+    let cleanedText = text.trim();
+    if (cleanedText.startsWith("```")) {
+      // Remove opening ```json or ```
+      cleanedText = cleanedText.replace(/^```(?:json)?\s*\n?/, "");
+      // Remove closing ```
+      cleanedText = cleanedText.replace(/\n?```\s*$/, "");
+      cleanedText = cleanedText.trim();
+    }
+    
+    let parsed;
+    try {
+      parsed = JSON.parse(cleanedText);
+    } catch (e) {
+      throw new Error("Failed to parse Gemini JSON: " + cleanedText.slice(0, 200));
+    }
+    return parsed;
+  } catch (error) {
+    const isLastAttempt = attempt >= MAX_RETRIES;
+    console.warn(`CAST: Gemini request failed on attempt ${attempt}/${MAX_RETRIES}:`, error);
+    if (!isLastAttempt) {
+      const backoffMs = 500 * attempt;
+      await sleep(backoffMs);
+      return callGemini(apiKey, networkPayload, attempt + 1);
+    }
+    throw new Error(`Gemini request failed after ${MAX_RETRIES} attempts: ${error.message || error}`);
   }
-  return parsed;
 }

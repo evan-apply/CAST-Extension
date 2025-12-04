@@ -438,8 +438,13 @@
         el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
         el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
         
-        // Click the element
-        el.click();
+        // Click the element - use click() method if available, otherwise dispatch click event
+        if (typeof el.click === 'function') {
+          el.click();
+        } else {
+          // Fallback: dispatch a click event for elements without click() method
+          el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        }
         
         await new Promise(resolve => setTimeout(resolve, 50));
         
