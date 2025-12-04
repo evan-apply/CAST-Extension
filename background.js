@@ -994,14 +994,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         ).join('\n');
 
         const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-        const blobUrl = (globalThis.URL || self.URL).createObjectURL(blob);
+        const objectUrlFactory = (self.URL || (self.webkitURL && self.webkitURL));
+        if (!objectUrlFactory || !objectUrlFactory.createObjectURL) {
+          sendResponse({ error: "Browser does not support creating download URLs." });
+          return;
+        }
+        const blobUrl = objectUrlFactory.createObjectURL(blob);
 
         chrome.downloads.download({
           url: blobUrl,
           filename: "CAST_network_calls.csv",
           saveAs: true
         }, (downloadId) => {
-          setTimeout(() => (globalThis.URL || self.URL).revokeObjectURL(blobUrl), 2000);
+          setTimeout(() => objectUrlFactory.revokeObjectURL(blobUrl), 2000);
           if (chrome.runtime.lastError) {
             sendResponse({ error: chrome.runtime.lastError.message });
           } else {
