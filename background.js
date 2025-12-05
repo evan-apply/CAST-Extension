@@ -38,6 +38,53 @@ function normalizeUrl(url) {
   }
 }
 
+// Helper to clear entire database
+async function clearEntireDatabase() {
+  if (!networkCallsDB) {
+    try {
+      await initNetworkCallsDB();
+    } catch (e) {
+      // If we can't open it, maybe it doesn't exist or is locked
+      return;
+    }
+  }
+  
+  const stores = ['networkCalls', 'techStackResults', 'analyticsEventsResults'];
+  const clearPromises = stores.map(storeName => {
+    return new Promise((resolve, reject) => {
+      if (!networkCallsDB.objectStoreNames.contains(storeName)) {
+        resolve();
+        return;
+      }
+      const transaction = networkCallsDB.transaction([storeName], 'readwrite');
+      const store = transaction.objectStore(storeName);
+      const request = store.clear();
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  });
+  
+  try {
+    await Promise.all(clearPromises);
+    console.log('CAST: All IndexedDB data cleared on startup.');
+  } catch (error) {
+    console.error('CAST: Error clearing database on startup:', error);
+  }
+}
+
+// Open side panel on action click
+chrome.action.onClicked.addListener((tab) => {
+  // Open side panel for the current window
+  chrome.sidePanel.open({ windowId: tab.windowId });
+});
+
+// Clear data on browser startup (session-only persistence)
+chrome.runtime.onStartup.addListener(() => {
+  console.log('CAST: Browser started, clearing previous session data...');
+  clearEntireDatabase();
+  chrome.storage.local.remove(['CAST_currentSessionId', 'CAST_crawlActive', 'CAST_crawlStatus']);
+});
+
 // Initialize IndexedDB for network calls storage
 async function initNetworkCallsDB() {
   if (networkCallsDB) return networkCallsDB;
@@ -669,15 +716,39 @@ function trimPayloadToLimit(payload, maxTokens) {
   return trimmedPayload;
 }
 
+// Use Offscreen API or simplified keep-alive interval to prevent SW termination
+// In MV3, Offscreen API is the official way, but for now we can use a "pinger" via the content script
+// or just rely on the open messaging channel.
+
+// Simple self-ping to keep alive during analysis
+let keepAliveInterval;
+function startKeepAlive() {
+  if (keepAliveInterval) clearInterval(keepAliveInterval);
+  keepAliveInterval = setInterval(() => {
+    // Reading storage is a simple async op that resets the idle timer
+    chrome.storage.local.get(['CAST_keepAlive'], () => {});
+  }, 20000); // Ping every 20s (timeout is usually 30s)
+}
+
+function stopKeepAlive() {
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+    keepAliveInterval = null;
+  }
+}
+
 // Process network calls in batches and store results
 async function processBatchesDirect(apiKey, networkCalls, sessionId, progressCallback) {
+  startKeepAlive();
   if (!networkCallsDB) await initNetworkCallsDB();
   
-  const MAX_TOKENS_PER_BATCH = 680000; // Updated to < 700k limit as requested
-  const batches = [];
-  let currentBatch = [];
-  let currentBatchTokens = 0;
-  const baseOverhead = 2000; // System prompt overhead
+  const batches = []; // Move variable outside try block
+  
+  try {
+    const MAX_TOKENS_PER_BATCH = 100000; // Drastically reduced limit (100k) to prevent 1M limit error
+    let currentBatch = [];
+    let currentBatchTokens = 0;
+    const baseOverhead = 2000; // System prompt overhead
   
   // Split network calls into batches based on token estimation
   for (const call of networkCalls) {
@@ -727,16 +798,22 @@ async function processBatchesDirect(apiKey, networkCalls, sessionId, progressCal
         continue;
       }
       
+      // Trim if exceeds limit (redundant but safe)
       if (payloadTokens > MAX_TOKENS_PER_BATCH) {
         console.warn(`CAST: Batch ${i + 1} payload exceeds token limit (${payloadTokens}), trimming...`);
         payload = trimPayloadToLimit(payload, MAX_TOKENS_PER_BATCH);
         payloadTokens = estimateTokensForPayload(payload);
-        if (payloadTokens > MAX_TOKENS_PER_BATCH) {
-          console.error(`CAST: Unable to trim batch ${i + 1} below token limit, skipping`);
-          continue;
-        }
       }
       
+      // HARD CHECK: Ensure payload is under 1M tokens (approx 4M characters) no matter what
+      // Gemini 1.5 Pro limit is ~1M tokens. 1 token ~= 4 chars.
+      // 4MB limit is safe.
+      const payloadStr = JSON.stringify(payload);
+      if (payloadStr.length > 3500000) { // ~875k tokens, safe buffer
+         console.warn(`CAST: Batch ${i + 1} payload is dangerously large (${payloadStr.length} chars). Trimming aggressively.`);
+         payload = trimPayloadToLimit(payload, 200000); // Trim to very small size (50k tokens approx)
+      }
+
       // Call Gemini
       const result = await callGemini(apiKey, payload);
       
@@ -771,6 +848,10 @@ async function processBatchesDirect(apiKey, networkCalls, sessionId, progressCal
       current: 'AI analysis complete',
       stage: 'AI Analysis'
     });
+  }
+  
+  } finally {
+    stopKeepAlive();
   }
   
   return { batchesProcessed: batches.length, totalCalls: networkCalls.length };
@@ -830,6 +911,87 @@ function notifyPopupStatus(status) {
   }
 }
 
+// Manual mode state
+let manualModeActive = false;
+
+async function startManualMode() {
+  chrome.tabs.query({ active: true, lastFocusedWindow: true }, async ([tab]) => {
+    if (!tab || !tab.url || !tab.url.startsWith("http")) {
+      notifyPopupStatus("Please navigate to a valid web page first.");
+      return;
+    }
+
+    const u = new URL(tab.url);
+    origin = u.origin;
+    activeTabId = tab.id;
+    manualModeActive = true;
+    
+    // Ensure logs exist for this page
+    logs = logs || {};
+    const normalizedUrl = normalizeUrl(u.href);
+    visited = visited || new Set();
+    visited.add(normalizedUrl);
+
+    // Initialize IndexedDB/Session similar to auto-crawl
+    try {
+      await initNetworkCallsDB();
+    } catch (error) {
+      console.warn('Failed to initialize IndexedDB:', error);
+    }
+    
+    // Restore or create session ID
+    chrome.storage.local.get(['CAST_currentSessionId'], async (res) => {
+      if (!currentSessionId) {
+        currentSessionId = res.CAST_currentSessionId || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        chrome.storage.local.set({ CAST_currentSessionId: currentSessionId });
+      }
+      
+      notifyPopupStatus("Manual Mode Active. Navigate and interact freely. Traffic is being recorded.");
+      
+      chrome.debugger.attach({ tabId: tab.id }, "1.3", (error) => {
+        if (error) {
+          console.error('Failed to attach debugger:', error);
+          manualModeActive = false;
+          notifyPopupStatus("Failed to attach debugger. Please reload the extension.");
+          return;
+        }
+        chrome.debugger.sendCommand({ tabId: tab.id }, "Network.enable", {
+          maxResourceBufferSize: 10000000, 
+          maxPostDataSize: 10000000
+        });
+        
+        // Inject content script to capture clicks/DOM even in manual mode
+        chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['content/crawler.js']
+        }).catch(err => console.log('Content script note:', err.message));
+      });
+    });
+  });
+}
+
+function stopManualMode() {
+  manualModeActive = false;
+  if (activeTabId) {
+    chrome.debugger.detach({ tabId: activeTabId }, () => {
+      if (chrome.runtime.lastError) {
+        console.warn('Debugger detach warning:', chrome.runtime.lastError.message);
+      }
+    });
+  }
+  notifyPopupStatus("Manual Mode Stopped. Traffic recorded.");
+}
+
+// Keep-alive connection handling
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === "cast-popup-connection") {
+    console.log("CAST: Popup connected, keeping service worker alive");
+    port.onDisconnect.addListener(() => {
+      console.log("CAST: Popup disconnected");
+    });
+  }
+});
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "crawl-start") {
     // Use provided depth or default to 2
@@ -839,6 +1001,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     pageLimit = typeof msg.pageLimit === 'number' && msg.pageLimit > 0 ? msg.pageLimit : null;
     startCrawl();
     // No response needed for crawl-start, popup doesn't wait for it
+    return false;
+  }
+
+  if (msg.type === "manual-start") {
+    startManualMode();
+    sendResponse({ success: true });
+    return false;
+  }
+
+  if (msg.type === "manual-stop") {
+    stopManualMode();
+    sendResponse({ success: true });
     return false;
   }
 
@@ -899,7 +1073,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Return current crawl status for popup restoration
     sendResponse({
       active: crawlActive,
-      status: crawlActive ? `Crawling... (${visited.size} visited, ${queue.length} queued)` : "No active crawl",
+      manualMode: manualModeActive,
+      status: crawlActive ? `Crawling... (${visited.size} visited, ${queue.length} queued)` 
+             : manualModeActive ? "Manual Mode Active" 
+             : "No active crawl",
       visited: visited.size,
       queued: queue.length
     });
@@ -2056,10 +2233,12 @@ Rules:
   return parsed;
   } catch (error) {
     const isLastAttempt = attempt >= MAX_RETRIES;
+    const isNetworkError = error.message.includes('Failed to fetch') || error.message.includes('NetworkError');
+    const delay = isNetworkError ? 2000 * attempt : 500 * attempt; // Longer backoff for network errors
+    
     console.warn(`CAST: Gemini request failed on attempt ${attempt}/${MAX_RETRIES}:`, error);
     if (!isLastAttempt) {
-      const backoffMs = 500 * attempt;
-      await sleep(backoffMs);
+      await sleep(delay);
       return callGemini(apiKey, networkPayload, attempt + 1);
     }
     throw new Error(`Gemini request failed after ${MAX_RETRIES} attempts: ${error.message || error}`);

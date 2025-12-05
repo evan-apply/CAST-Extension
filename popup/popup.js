@@ -31,12 +31,19 @@ function setCollapsibleState(expanded) {
 }
 
 if (inputToggle && inputContent) {
-  setCollapsibleState(true);
+  setCollapsibleState(false); // Default to closed
   inputToggle.addEventListener("click", () => {
     const isOpen = inputContent.classList.contains("open");
     setCollapsibleState(!isOpen);
   });
 }
+
+// Establish long-lived connection to keep service worker alive
+const port = chrome.runtime.connect({ name: "cast-popup-connection" });
+port.onDisconnect.addListener(() => {
+  console.log("CAST: Popup connection disconnected");
+  // Optional: Try to reconnect if needed
+});
 
 // Restore state when popup opens
 function restoreCrawlState() {
@@ -46,8 +53,15 @@ function restoreCrawlState() {
     "CAST_crawlDepth",
     "CAST_visitedCount",
     "CAST_queuedCount",
-    "CAST_pageLimit"
+    "CAST_pageLimit",
+    "CAST_ragProgress" // Fetch progress too
   ], (res) => {
+    // Restore Progress Bar if analyzing
+    if (res.CAST_ragProgress && res.CAST_ragProgress.percentage < 100) {
+      updateProgressBar(res.CAST_ragProgress);
+      isAnalyzing = true; // Set flag so it continues updating
+    }
+
     if (res.CAST_crawlActive) {
       const status = res.CAST_crawlStatus || "Crawl in progress...";
       statusEl.textContent = status;
@@ -57,6 +71,9 @@ function restoreCrawlState() {
       chrome.runtime.sendMessage({ type: "get-crawl-status" }, (response) => {
         if (response && response.active) {
           statusEl.textContent = response.status || status;
+        } else if (response && response.manualMode) {
+          statusEl.textContent = "Manual Mode Active";
+          document.getElementById("startManual").textContent = "Stop Manual Mode";
         } else if (!response || !response.active) {
           // Crawl might have finished
           statusEl.textContent = res.CAST_crawlStatus || "Crawl complete.";
@@ -177,8 +194,15 @@ function updateProgressBar(progress) {
 // Poll for progress updates (in case popup was opened during processing)
 setInterval(() => {
   chrome.storage.local.get(["CAST_ragProgress"], (res) => {
-    if (res.CAST_ragProgress && isAnalyzing) {
-      updateProgressBar(res.CAST_ragProgress);
+    // Always check for progress if we think we might be analyzing OR if progress exists and is incomplete
+    if (res.CAST_ragProgress) {
+      if (res.CAST_ragProgress.percentage < 100) {
+        isAnalyzing = true;
+        updateProgressBar(res.CAST_ragProgress);
+      } else if (isAnalyzing) {
+        // If we were analyzing but it's done now
+        handleAnalysisComplete();
+      }
     }
   });
 }, 700);
@@ -257,6 +281,29 @@ document.getElementById("start").onclick = () => {
     CAST_pageLimit: limitValue === "all" ? "all" : pageLimit
   });
   chrome.runtime.sendMessage({ type: "crawl-start", depth: depth, pageLimit });
+};
+
+document.getElementById("startManual").onclick = () => {
+  const btn = document.getElementById("startManual");
+  const isRunning = btn.textContent.includes("Stop");
+  
+  if (isRunning) {
+    chrome.runtime.sendMessage({ type: "manual-stop" });
+    btn.textContent = "Start Manual Mode";
+    statusEl.textContent = "Manual mode stopped.";
+  } else {
+    statusEl.textContent = "Starting Manual Mode... browser is ready for your interactions.";
+    statusEl.style.display = "block";
+    reportBox.textContent = "";
+    
+    chrome.runtime.sendMessage({ type: "manual-start" }, (res) => {
+      if (res && res.error) {
+        statusEl.textContent = "Error: " + res.error;
+        return;
+      }
+      btn.textContent = "Stop Manual Mode";
+    });
+  }
 };
 
 document.getElementById("downloadJSON").onclick = () => {

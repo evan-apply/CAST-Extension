@@ -9,24 +9,26 @@
       }
       
       body {
-        background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);
-        color: #ffffff;
+        background: #ffffff;
+        color: #1e293b;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
-        width: 400px;
+        width: 100%;
+        min-width: 300px;
         padding: 0;
         margin: 0;
         line-height: 1.5;
       }
       
       .container {
-        padding: 24px;
+        padding: 16px;
+        padding-bottom: 60px; /* Space for sticky footer */
       }
       
       h2 {
-        margin: 0 0 24px;
-        font-size: 24px;
+        margin: 0 0 16px;
+        font-size: 20px;
         font-weight: 700;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         background-clip: text;
@@ -34,11 +36,11 @@
       }
       
       .collapsible {
-        margin-bottom: 20px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
+        margin-bottom: 12px;
+        border: 1px solid #e2e8f0;
         border-radius: 10px;
         overflow: hidden;
-        background: rgba(255, 255, 255, 0.03);
+        background: #f8fafc;
       }
       
       .collapsible-header {
@@ -46,7 +48,7 @@
         padding: 12px 16px;
         background: transparent;
         border: none;
-        color: #fff;
+        color: #334155;
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -61,6 +63,7 @@
       
       .collapsible-header svg {
         transition: transform 0.2s ease;
+        stroke: #64748b;
       }
       
       .collapsible-header.open svg {
@@ -80,7 +83,7 @@
       
       label {
         font-size: 13px;
-        color: #b0b0b0;
+        color: #64748b;
         display: block;
         margin-bottom: 8px;
         font-weight: 500;
@@ -89,43 +92,43 @@
       
       input[type="password"], 
       input[type="text"], 
-      input[type="number"] {
+      input[type="number"],
+      select {
         width: 100%;
-        padding: 12px 16px;
+        padding: 10px 12px;
         border-radius: 8px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        background: rgba(255, 255, 255, 0.05);
-        color: #ffffff;
+        border: 1px solid #cbd5e1;
+        background: #ffffff;
+        color: #1e293b;
         font-size: 14px;
         margin-bottom: 0;
         transition: all 0.2s ease;
-        backdrop-filter: blur(10px);
       }
       
       input[type="password"]:focus, 
       input[type="text"]:focus, 
-      input[type="number"]:focus {
+      input[type="number"]:focus,
+      select:focus {
         outline: none;
-        border-color: #667eea;
-        background: rgba(255, 255, 255, 0.08);
-        box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        border-color: #3498db;
+        box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.1);
       }
       
       input::placeholder {
-        color: #666;
+        color: #94a3b8;
       }
       
       .info-panel {
         margin-top: 16px;
         padding: 14px 16px;
-        background: rgba(102, 126, 234, 0.08);
+        background: #f0f9ff;
         border-radius: 10px;
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        border: 1px solid #e0f2fe;
       }
       
       .info-header {
         font-size: 12px;
-        color: #a0a0a0;
+        color: #64748b;
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -135,7 +138,7 @@
       #progressBarWrapper {
         width: 100%;
         height: 6px;
-        background: rgba(255, 255, 255, 0.1);
+        background: #e2e8f0;
         border-radius: 3px;
         overflow: hidden;
         display: none;
@@ -144,13 +147,13 @@
       #progressBar {
         height: 100%;
         width: 0%;
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        background: linear-gradient(90deg, #3498db 0%, #2c3e50 100%);
         transition: width 0.3s ease;
       }
       
       .info-subtext {
         font-size: 11px;
-        color: #888;
+        color: #64748b;
         margin-top: 6px;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -165,72 +168,72 @@
       }
       
       .stat-card {
-        background: rgba(0, 0, 0, 0.25);
+        background: #ffffff;
         border-radius: 8px;
         padding: 8px;
-        border: 1px solid rgba(255, 255, 255, 0.05);
+        border: 1px solid #e2e8f0;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
       }
       
       .stat-label {
         display: block;
-        font-size: 11px;
-        color: #aaa;
-        margin-bottom: 4px;
+        font-size: 10px; 
+        color: #64748b;
+        margin-bottom: 2px;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
       
       .stat-value {
-        font-size: 16px;
+        font-size: 14px;
         font-weight: 600;
-        color: #fff;
+        color: #1e293b;
       }
       
       button {
         width: 100%;
-        padding: 14px 20px;
-        margin-bottom: 10px;
-        border-radius: 8px;
+        padding: 10px 12px;
+        margin-bottom: 0;
+        border-radius: 6px;
         border: none;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
         color: white;
         cursor: pointer;
-        font-size: 14px;
+        font-size: 13px;
         font-weight: 500;
         transition: all 0.2s ease;
         box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
         letter-spacing: 0.2px;
       }
-      
+
       button:hover {
         transform: translateY(-1px);
-        box-shadow: 0 6px 12px rgba(102, 126, 234, 0.3);
+        box-shadow: 0 4px 8px rgba(52, 152, 219, 0.3);
       }
-      
+
       button:active {
         transform: translateY(0);
       }
-      
+
       button.secondary {
-        background: rgba(255, 255, 255, 0.08);
-        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
+        border: none;
       }
-      
+
       button.secondary:hover {
-        background: rgba(255, 255, 255, 0.12);
-        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+        box-shadow: 0 4px 8px rgba(52, 152, 219, 0.3);
       }
       
       
       #status {
-        margin-top: 16px;
-        font-size: 13px;
-        color: #a0a0a0;
-        padding: 12px;
-        background: rgba(102, 126, 234, 0.1);
+        margin-top: 12px;
+        font-size: 12px;
+        color: #475569;
+        padding: 10px;
+        background: #eff6ff;
         border-radius: 8px;
-        border-left: 3px solid #667eea;
+        border-left: 3px solid #3498db;
         min-height: 0;
         display: none;
       }
@@ -240,17 +243,17 @@
       }
       
       #reportBox {
-        margin-top: 16px;
-        font-size: 12px;
-        max-height: 240px;
+        margin-top: 12px;
+        font-size: 11px;
+        max-height: 180px;
         overflow: auto;
-        background: rgba(0, 0, 0, 0.3);
+        background: #f8fafc;
         border-radius: 8px;
-        padding: 16px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
+        padding: 12px;
+        border: 1px solid #e2e8f0;
         white-space: pre-wrap;
-        line-height: 1.6;
-        backdrop-filter: blur(10px);
+        line-height: 1.5;
+        color: #334155;
         display: none;
       }
       
@@ -259,35 +262,40 @@
       }
       
       #reportBox::-webkit-scrollbar {
-        width: 8px;
+        width: 6px;
       }
       
       #reportBox::-webkit-scrollbar-track {
-        background: rgba(255, 255, 255, 0.05);
-        border-radius: 4px;
+        background: #f1f5f9;
+        border-radius: 3px;
       }
       
       #reportBox::-webkit-scrollbar-thumb {
-        background: rgba(255, 255, 255, 0.2);
-        border-radius: 4px;
+        background: #cbd5e1;
+        border-radius: 3px;
       }
       
       #reportBox::-webkit-scrollbar-thumb:hover {
-        background: rgba(255, 255, 255, 0.3);
+        background: #94a3b8;
       }
       
       #footer {
-        margin-top: 24px;
-        padding-top: 20px;
-        border-top: 1px solid rgba(255, 255, 255, 0.1);
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        padding: 12px 0;
+        background: #ffffff;
+        border-top: 1px solid #e2e8f0;
         text-align: center;
-        font-size: 12px;
-        color: #888;
+        font-size: 11px;
+        color: #94a3b8;
         font-weight: 500;
+        z-index: 100;
       }
       
       .input-group {
-        margin-bottom: 16px;
+        margin-bottom: 12px;
       }
       
       .input-with-indicator {
@@ -303,8 +311,8 @@
         right: 12px;
         top: 50%;
         transform: translateY(-50%);
-        color: #4ade80;
-        font-size: 18px;
+        color: #22c55e;
+        font-size: 16px;
         font-weight: 600;
         opacity: 0;
         transition: opacity 0.2s ease;
@@ -318,14 +326,14 @@
       .button-group {
         display: flex;
         flex-direction: column;
-        gap: 0;
-        margin-top: 20px;
+        gap: 8px;
+        margin-top: 12px;
       }
       
       small {
         display: block;
         margin-top: 4px;
-        color: #888;
+        color: #64748b;
         font-size: 11px;
         line-height: 1.4;
       }
@@ -333,7 +341,7 @@
   </head>
   <body>
     <div class="container">
-      <h2>CAST 3.2</h2>
+      <h2>CAST <span style="font-size: 14px; font-weight: 400; opacity: 0.7;">3.3</span></h2>
 
       <div class="collapsible">
         <button id="inputToggle" class="collapsible-header">
@@ -368,6 +376,7 @@
 
       <div class="button-group">
         <button id="start">Start Full Crawl</button>
+        <button id="startManual" class="secondary">Start Manual Mode</button>
         <button id="runAI">Run AI Analysis</button>
         <button id="downloadJSON" class="secondary">Download Raw Network Calls</button>
         <button id="downloadTech" class="secondary">Download Tech Stack</button>
