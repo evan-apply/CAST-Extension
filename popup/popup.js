@@ -306,6 +306,93 @@ document.getElementById("startManual").onclick = () => {
   }
 };
 
+document.getElementById("recommendStrategy").onclick = () => {
+  statusEl.textContent = "Analyzing page structure for recommendations...";
+  statusEl.style.display = "block";
+  
+  const strategyBox = document.getElementById("strategyBox");
+  const strategyList = document.getElementById("strategyList");
+  strategyBox.style.display = "none";
+  strategyList.innerHTML = "";
+
+  chrome.runtime.sendMessage({ type: "recommend-strategy" }, (res) => {
+    if (!res) {
+      statusEl.textContent = "No response from background.";
+      return;
+    }
+    if (res.error) {
+      statusEl.textContent = "Strategy Error: " + res.error;
+      return;
+    }
+    
+    const strategy = res.strategy;
+    if (!strategy || !strategy.recommendations || strategy.recommendations.length === 0) {
+      statusEl.textContent = "No specific recommendations found for this page.";
+      return;
+    }
+
+    statusEl.textContent = `Found ${strategy.recommendations.length} recommendations.`;
+    strategyBox.style.display = "block";
+
+    strategy.recommendations.forEach(rec => {
+      const item = document.createElement("div");
+      item.style.padding = "10px";
+      item.style.borderBottom = "1px solid #e2e8f0";
+      item.style.display = "flex";
+      item.style.flexDirection = "column";
+      item.style.gap = "4px";
+      item.style.cursor = "pointer";
+      item.style.transition = "background-color 0.2s";
+      
+      item.onmouseover = () => { item.style.backgroundColor = "#f1f5f9"; };
+      item.onmouseout = () => { item.style.backgroundColor = "transparent"; };
+      
+      item.onclick = () => {
+        chrome.runtime.sendMessage({ 
+            type: "highlight-element", 
+            selector: rec.selector, 
+            label: rec.eventName 
+        });
+      };
+
+      const header = document.createElement("div");
+      header.style.display = "flex";
+      header.style.justifyContent = "space-between";
+      header.style.alignItems = "center";
+
+      const title = document.createElement("span");
+      title.style.fontWeight = "600";
+      title.style.fontSize = "13px";
+      title.style.color = "#1e293b";
+      title.textContent = rec.eventName;
+
+      const badge = document.createElement("span");
+      badge.style.fontSize = "10px";
+      badge.style.padding = "2px 6px";
+      badge.style.borderRadius = "4px";
+      badge.style.backgroundColor = rec.priority === "High" ? "#fee2e2" : "#e0f2fe";
+      badge.style.color = rec.priority === "High" ? "#991b1b" : "#075985";
+      badge.textContent = rec.category;
+
+      header.appendChild(title);
+      header.appendChild(badge);
+
+      const desc = document.createElement("div");
+      desc.style.fontSize = "11px";
+      desc.style.color = "#64748b";
+      desc.textContent = rec.reasoning;
+
+      item.appendChild(header);
+      item.appendChild(desc);
+      strategyList.appendChild(item);
+    });
+  });
+};
+
+document.getElementById("closeStrategy").onclick = () => {
+  document.getElementById("strategyBox").style.display = "none";
+};
+
 document.getElementById("downloadJSON").onclick = () => {
   statusEl.textContent = "Preparing raw network export…";
   statusEl.style.display = "block";

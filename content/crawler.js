@@ -596,12 +596,171 @@
     }
   }
 
+  // Highlight element with overlay
+  function highlightElement(selector, label) {
+    // Remove existing highlights
+    document.querySelectorAll('.cast-strategy-overlay').forEach(el => el.remove());
+
+    try {
+      const el = document.querySelector(selector);
+      if (!el) {
+        console.warn(`CAST: Element not found for selector: ${selector}`);
+        return;
+      }
+
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+      const rect = el.getBoundingClientRect();
+      const overlay = document.createElement('div');
+      overlay.className = 'cast-strategy-overlay';
+      overlay.style.position = 'absolute';
+      overlay.style.top = `${rect.top + window.scrollY}px`;
+      overlay.style.left = `${rect.left + window.scrollX}px`;
+      overlay.style.width = `${rect.width}px`;
+      overlay.style.height = `${rect.height}px`;
+      overlay.style.backgroundColor = 'rgba(52, 152, 219, 0.3)'; // Blue overlay
+      overlay.style.border = '2px solid #3498db';
+      overlay.style.zIndex = '10000';
+      overlay.style.pointerEvents = 'none'; // Allow clicking through
+      overlay.style.boxSizing = 'border-box';
+      
+      // Add label
+      const labelDiv = document.createElement('div');
+      labelDiv.textContent = label;
+      labelDiv.style.position = 'absolute';
+      labelDiv.style.top = '-25px';
+      labelDiv.style.left = '0';
+      labelDiv.style.backgroundColor = '#3498db';
+      labelDiv.style.color = 'white';
+      labelDiv.style.padding = '2px 6px';
+      labelDiv.style.fontSize = '12px';
+      labelDiv.style.borderRadius = '4px';
+      labelDiv.style.whiteSpace = 'nowrap';
+      labelDiv.style.zIndex = '10001';
+      
+      overlay.appendChild(labelDiv);
+      document.body.appendChild(overlay);
+      
+      // Auto-remove after 5 seconds? Or keep until next click?
+      // Let's keep until next click (handled by removing existing highlights at start)
+      
+    } catch (e) {
+      console.error('CAST: Error highlighting element:', e);
+    }
+  }
+
+  // Generate simplified DOM for AI analysis
+  function getSimplifiedDOM() {
+    const semanticTags = ['HEADER', 'FOOTER', 'NAV', 'MAIN', 'SECTION', 'ARTICLE', 'ASIDE'];
+    const interactiveTags = ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'FORM'];
+    
+    const elements = [];
+    
+    function processNode(node, context = 'body') {
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      
+      const tagName = node.tagName;
+      
+      // Update context if we enter a semantic section
+      let currentContext = context;
+      if (semanticTags.includes(tagName)) {
+        currentContext = tagName.toLowerCase();
+      }
+      
+      // Check if it's an element of interest
+      if (interactiveTags.includes(tagName) || 
+          (semanticTags.includes(tagName)) ||
+          node.onclick || 
+          node.getAttribute('role') === 'button') {
+            
+        // Generate a selector (simplified)
+        let selector = tagName.toLowerCase();
+        if (node.id) selector += `#${node.id}`;
+        else if (node.className && typeof node.className === 'string') {
+           // Take first 2 classes
+           const classes = node.className.trim().split(/\s+/).filter(c => c && !c.startsWith('cast-'));
+           if (classes.length) selector += `.${classes.slice(0, 2).join('.')}`;
+        }
+        
+        // Add path for uniqueness if needed, but keep it short
+        // For AI, identifying "the button in the header" is key.
+        
+        // Capture text content (truncated)
+        let text = '';
+        if (tagName === 'INPUT') {
+            text = node.placeholder || node.name || '';
+        } else {
+            text = (node.innerText || '').slice(0, 50).replace(/\s+/g, ' ').trim();
+        }
+        
+        elements.push({
+          tag: tagName.toLowerCase(),
+          id: node.id || null,
+          class: node.className && typeof node.className === 'string' ? node.className : null,
+          text: text,
+          href: node.href || null,
+          action: node.action || null, // for forms
+          context: currentContext,
+          // Generate a unique-ish path for highlighting later
+          // We'll use a custom data attribute temporarily or just rely on CSS path
+          // Let's try to generate a CSS path
+          path: getCssPath(node)
+        });
+      }
+      
+      // Recurse
+      for (let i = 0; i < node.children.length; i++) {
+        processNode(node.children[i], currentContext);
+      }
+    }
+    
+    // Helper to get unique selector
+    function getCssPath(el) {
+      if (!(el instanceof Element)) return;
+      const path = [];
+      while (el.nodeType === Node.ELEMENT_NODE) {
+        let selector = el.nodeName.toLowerCase();
+        if (el.id) {
+          selector += '#' + el.id;
+          path.unshift(selector);
+          break;
+        } else {
+          let sib = el, nth = 1;
+          while (sib = sib.previousElementSibling) {
+            if (sib.nodeName.toLowerCase() == selector)
+              nth++;
+          }
+          if (nth != 1)
+            selector += ":nth-of-type("+nth+")";
+        }
+        path.unshift(selector);
+        el = el.parentNode;
+      }
+      return path.join(" > ");
+    }
+
+    processNode(document.body);
+    return elements.slice(0, 500); // Limit to ~500 elements to keep token count reasonable
+  }
+
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === "scan-page") {
       console.log('CAST: Received scan-page message, depth:', msg.depth || 0);
       interactAndScan(msg.depth || 0);
       sendResponse({ success: true }); // Acknowledge receipt
       return true; // Keep channel open for async response
+    }
+    
+    if (msg.type === "get-page-structure") {
+        const dom = getSimplifiedDOM();
+        sendResponse({ dom });
+        return false;
+    }
+    
+    if (msg.type === "show-highlight") {
+        highlightElement(msg.selector, msg.label);
+        sendResponse({ success: true });
+        return false;
     }
   });
   

@@ -377,10 +377,19 @@
       <div class="button-group">
         <button id="start">Start Full Crawl</button>
         <button id="startManual" class="secondary">Start Manual Mode</button>
+        <button id="recommendStrategy" class="secondary">Recommend Strategy</button>
         <button id="runAI">Run AI Analysis</button>
         <button id="downloadJSON" class="secondary">Download Raw Network Calls</button>
         <button id="downloadTech" class="secondary">Download Tech Stack</button>
         <button id="downloadAnalytics" class="secondary">Download Analytics Events</button>
+      </div>
+
+      <div id="strategyBox" class="info-panel" style="display: none;">
+        <div class="info-header">
+          <span>Tracking Recommendations</span>
+          <button id="closeStrategy" style="width: auto; padding: 2px 6px; margin: 0; background: transparent; color: #64748b; box-shadow: none;">✕</button>
+        </div>
+        <div id="strategyList" style="max-height: 300px; overflow-y: auto;"></div>
       </div>
 
       <div id="status"></div>

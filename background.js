@@ -992,7 +992,141 @@ chrome.runtime.onConnect.addListener((port) => {
   }
 });
 
+// Generate analytics strategy recommendation
+async function generateAnalyticsStrategy(apiKey, domData) {
+  const endpoint =
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent?key=" +
+    encodeURIComponent(apiKey);
+
+  const systemPrompt = `
+You are an expert Digital Analytics Strategist.
+Your goal is to analyze a simplified DOM structure of a webpage and recommend a comprehensive analytics tracking strategy.
+
+Input: A JSON list of simplified DOM elements (tag, id, class, text, context).
+
+Output: A JSON object containing a list of recommendations.
+Format:
+{
+  "recommendations": [
+    {
+      "selector": "string (unique CSS selector)",
+      "eventName": "string (e.g., navigation_click, form_submit, cta_click)",
+      "category": "string (e.g., Navigation, Conversion, Engagement)",
+      "reasoning": "string (Why is this important to track?)",
+      "priority": "High" | "Medium" | "Low"
+    }
+  ]
+}
+
+Rules:
+1. Focus on business-critical interactions: Sign-ups, Purchases, Contact forms, Main Navigation, Downloads.
+2. Identify "Call to Action" (CTA) buttons and links.
+3. Suggest standard event names (snake_case recommended).
+4. Use the provided 'tag', 'id', 'class', and 'context' to construct a reliable CSS selector.
+   - Prefer IDs if available.
+   - Use classes if unique enough.
+   - Use nth-of-type or parent context if necessary.
+   - Example: "nav > ul > li:nth-of-type(1) > a" or "#submit-button"
+5. Do NOT suggest tracking every single element. Be strategic.
+`.trim();
+
+  const body = {
+    contents: [
+      {
+        parts: [
+          { text: systemPrompt },
+          { text: "DOM Structure:\n" + JSON.stringify(domData, null, 2) }
+        ]
+      }
+    ]
+  };
+
+  try {
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error("Gemini API error: " + text);
+    }
+
+    const data = await res.json();
+    const cand = data.candidates && data.candidates[0];
+    if (!cand || !cand.content || !cand.content.parts) {
+      throw new Error("No content returned from Gemini.");
+    }
+
+    const text = cand.content.parts.map((p) => p.text || "").join("");
+    let cleanedText = text.trim();
+    if (cleanedText.startsWith("```")) {
+      cleanedText = cleanedText.replace(/^```(?:json)?\s*\n?/, "");
+      cleanedText = cleanedText.replace(/\n?```\s*$/, "");
+      cleanedText = cleanedText.trim();
+    }
+
+    return JSON.parse(cleanedText);
+  } catch (error) {
+    console.error('CAST: Error generating analytics strategy:', error);
+    throw error;
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === "recommend-strategy") {
+    (async () => {
+      try {
+        // 1. Get API Key
+        const { geminiApiKey } = await chrome.storage.local.get("geminiApiKey");
+        if (!geminiApiKey) {
+          sendResponse({ error: "No API key found. Please configure it first." });
+          return;
+        }
+
+        // 2. Get DOM from active tab
+        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        if (!tab || !tab.id) {
+          sendResponse({ error: "No active tab found." });
+          return;
+        }
+
+        const domResponse = await chrome.tabs.sendMessage(tab.id, { type: "get-page-structure" });
+        if (!domResponse || !domResponse.dom) {
+          sendResponse({ error: "Failed to retrieve page structure." });
+          return;
+        }
+
+        // 3. Call Gemini
+        const strategy = await generateAnalyticsStrategy(geminiApiKey, domResponse.dom);
+        
+        // 4. Return results
+        sendResponse({ success: true, strategy });
+
+      } catch (error) {
+        console.error("Strategy generation failed:", error);
+        sendResponse({ error: error.message });
+      }
+    })();
+    return true; // Async response
+  }
+  
+  if (msg.type === "highlight-element") {
+    // Forward to content script
+    (async () => {
+        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        if (tab && tab.id) {
+            chrome.tabs.sendMessage(tab.id, { 
+                type: "show-highlight", 
+                selector: msg.selector, 
+                label: msg.label 
+            });
+        }
+    })();
+    return false;
+  }
+
   if (msg.type === "crawl-start") {
     // Use provided depth or default to 2
     maxDepth = typeof msg.depth === 'number' && msg.depth >= 0 && msg.depth <= 5 
