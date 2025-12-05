@@ -1013,7 +1013,10 @@ Format:
       "eventName": "string (snake_case, e.g., navigation_click, form_submit)",
       "category": "string (e.g., Navigation, Conversion, Engagement)",
       "reasoning": "string (Why is this important to track?)",
-      "priority": "High" | "Medium" | "Low"
+      "priority": "High" | "Medium" | "Low",
+      "codeSnippet": "string (JavaScript dataLayer.push code)",
+      "triggerType": "string (CSS Selector or Text Match)",
+      "triggerValue": "string (The actual selector or text to use in GTM)"
     }
   ]
 }
@@ -1029,6 +1032,12 @@ Rules:
    - For **groups of elements** (e.g., Footer links, Product cards, Menu items), use a generalized selector that matches ALL of them: "footer a", ".nav-item", ".product-card".
    - Avoid specific \`nth-of-type\` unless necessary to distinguish a unique element from a group.
 5. Do NOT suggest tracking every single element. Be strategic.
+6. For "codeSnippet", provide a valid JavaScript snippet for Google Tag Manager dataLayer push.
+   - Use standard GA4 schema: event, link_url, link_text, form_id, etc.
+   - Example: "window.dataLayer.push({ event: 'navigation_click', link_text: '{{Click Text}}', link_url: '{{Click URL}}' });"
+7. For "triggerType" and "triggerValue", specify how to configure the trigger in GTM.
+   - "CSS Selector": Use the CSS selector from rule #4.
+   - "Text Match": Use the button text if it's unique (e.g., "Sign Up").
 `.trim();
 
   const body = {

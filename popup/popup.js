@@ -371,7 +371,7 @@ document.getElementById("recommendStrategy").onclick = () => {
       title.style.fontWeight = "600";
       title.style.fontSize = "13px";
       title.style.color = "#1e293b";
-      title.textContent = rec.eventName;
+      title.textContent = rec.eventName || "Event Name Missing";
 
       const badge = document.createElement("span");
       badge.style.fontSize = "10px";
@@ -384,13 +384,77 @@ document.getElementById("recommendStrategy").onclick = () => {
       header.appendChild(title);
       header.appendChild(badge);
 
+      // Append header to item first!
+      item.appendChild(header);
+
       const desc = document.createElement("div");
       desc.style.fontSize = "11px";
       desc.style.color = "#64748b";
       desc.textContent = rec.reasoning;
 
-      item.appendChild(header);
-      item.appendChild(desc);
+      // Code Snippet Section
+      if (rec.codeSnippet) {
+        const codeContainer = document.createElement("div");
+        codeContainer.style.marginTop = "8px";
+        codeContainer.style.background = "#1e293b";
+        codeContainer.style.borderRadius = "4px";
+        codeContainer.style.padding = "8px";
+        codeContainer.style.display = "none"; // Hidden by default
+        
+        // Trigger Info
+        const triggerInfo = document.createElement("div");
+        triggerInfo.style.color = "#94a3b8";
+        triggerInfo.style.fontSize = "10px";
+        triggerInfo.style.marginBottom = "4px";
+        triggerInfo.style.borderBottom = "1px solid #334155";
+        triggerInfo.style.paddingBottom = "4px";
+        triggerInfo.innerHTML = `<strong>Trigger:</strong> ${rec.triggerType || 'CSS'} - <span style="color: #e2e8f0">${rec.triggerValue || rec.selector}</span>`;
+        codeContainer.appendChild(triggerInfo);
+
+        const pre = document.createElement("pre");
+        pre.style.margin = "0";
+        pre.style.whiteSpace = "pre-wrap";
+        pre.style.wordBreak = "break-all";
+        
+        const code = document.createElement("code");
+        code.style.fontFamily = "monospace";
+        code.style.fontSize = "10px";
+        code.style.color = "#e2e8f0";
+        code.textContent = rec.codeSnippet;
+        
+        pre.appendChild(code);
+        codeContainer.appendChild(pre);
+
+        // Toggle button
+        const toggleCode = document.createElement("button");
+        toggleCode.textContent = "Show Implementation";
+        toggleCode.style.fontSize = "10px";
+        toggleCode.style.padding = "2px 6px";
+        toggleCode.style.marginTop = "4px";
+        toggleCode.style.width = "auto";
+        toggleCode.style.background = "#e2e8f0";
+        toggleCode.style.color = "#334155";
+        toggleCode.style.border = "1px solid #cbd5e1";
+        toggleCode.style.boxShadow = "none";
+        
+        toggleCode.onclick = (e) => {
+          e.stopPropagation(); // Prevent highlighting when clicking this button
+          if (codeContainer.style.display === "none") {
+            codeContainer.style.display = "block";
+            toggleCode.textContent = "Hide Implementation";
+          } else {
+            codeContainer.style.display = "none";
+            toggleCode.textContent = "Show Implementation";
+          }
+        };
+
+        item.appendChild(desc);
+        item.appendChild(toggleCode);
+        item.appendChild(codeContainer);
+      } else {
+        item.appendChild(desc);
+      }
+
       strategyList.appendChild(item);
     });
   });
