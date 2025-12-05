@@ -344,18 +344,27 @@ function dedupeTechRecords(records = []) {
   const map = new Map();
   for (const item of records) {
     const key = `${(item.name || '').toLowerCase()}|${(item.category || '').toLowerCase()}`;
+    
+    // Robust evidence handling: ensure it's an iterable of strings
+    let evidenceItems = [];
+    if (Array.isArray(item.evidence)) {
+      evidenceItems = item.evidence;
+    } else if (typeof item.evidence === 'string') {
+      evidenceItems = item.evidence.split(' | ');
+    }
+    
     if (!map.has(key)) {
       map.set(key, {
         name: item.name || '',
         category: item.category || '',
         confidence: Number(item.confidence) || 0,
-        evidence: new Set((item.evidence || []).filter(Boolean)),
+        evidence: new Set(evidenceItems.filter(Boolean)),
         occurrences: 1
       });
     } else {
       const existing = map.get(key);
       existing.confidence = Math.max(existing.confidence, Number(item.confidence) || 0);
-      (item.evidence || []).forEach((ev) => ev && existing.evidence.add(ev));
+      evidenceItems.filter(Boolean).forEach((ev) => existing.evidence.add(ev));
       existing.occurrences += 1;
     }
   }
@@ -664,7 +673,7 @@ function trimPayloadToLimit(payload, maxTokens) {
 async function processBatchesDirect(apiKey, networkCalls, sessionId, progressCallback) {
   if (!networkCallsDB) await initNetworkCallsDB();
   
-  const MAX_TOKENS_PER_BATCH = 600000; // Conservative limit below 1M
+  const MAX_TOKENS_PER_BATCH = 680000; // Updated to < 700k limit as requested
   const batches = [];
   let currentBatch = [];
   let currentBatchTokens = 0;
@@ -702,7 +711,11 @@ async function processBatchesDirect(apiKey, networkCalls, sessionId, progressCal
   // Process each batch
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i];
-    const batchId = `batch_${i + 1}_${Date.now()}`;
+    const batchId = `batch_${i + 1}_${Date.now()}`; // Unique ID for this run
+    
+    // Skip if we think we've already processed this specific batch logic? 
+    // No, simple batch ID generation based on time means we always process.
+    // The user wants to see it run through the data.
     
     try {
       // Build payload for this batch
@@ -993,20 +1006,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }).join(',')
         ).join('\n');
 
-        // Use data URL to avoid objectURL limitations in MV3 service workers
-        const dataUrl = "data:text/csv;charset=utf-8," + encodeURIComponent(csvContent);
-
-        chrome.downloads.download({
-          url: dataUrl,
-          filename: "CAST_network_calls.csv",
-          saveAs: true
-        }, (downloadId) => {
-          if (chrome.runtime.lastError) {
-            sendResponse({ error: chrome.runtime.lastError.message });
-          } else {
-            sendResponse({ success: true, count: networkCalls.length, downloadId });
-          }
-        });
+        const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+        
+        // Use FileReader to generate a Data URL, as URL.createObjectURL is sometimes unavailable in Service Workers
+        const reader = new FileReader();
+        reader.onload = function() {
+          chrome.downloads.download({
+            url: reader.result,
+            filename: "CAST_network_calls.csv",
+            saveAs: true
+          }, (downloadId) => {
+            if (chrome.runtime.lastError) {
+              sendResponse({ error: chrome.runtime.lastError.message });
+            } else {
+              sendResponse({ success: true, count: networkCalls.length, downloadId });
+            }
+          });
+        };
+        reader.readAsDataURL(blob);
       } catch (error) {
         console.error('Network CSV export error:', error);
         sendResponse({ error: error.message || String(error) });
@@ -1093,9 +1110,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           request.onerror = () => resolve(new Set());
         });
         
-        // For now, always process all calls (deduplication happens at storage level)
-        // In future, we could track which calls were in which batch for incremental processing
-        const needsProcessing = !hasExistingResults || processedBatches.size === 0;
+        // Force reprocessing if requested or if we're in a debugging state
+        // The previous logic might skip processing if it sees ANY results, even incomplete ones.
+        // We want to ensure it processes ALL batches if they aren't fully done.
+        // For now, let's simplify: if we are running AI analysis, we should probably just run it on whatever data we have
+        // that hasn't been processed yet, OR just re-run it if the user asks.
+        
+        // However, the user issue is that it's NOT running through all data.
+        // Let's modify the condition to be more aggressive about processing.
+        // If we have network calls but no/partial results, we should process.
+        
+        // Let's check if we have ANY processed batches.
+        const hasProcessedBatches = processedBatches.size > 0;
+        
+        // If the user clicks "Run AI", they likely expect it to run on the current set of network calls.
+        // If we already have results for this session, we might want to skip ALREADY PROCESSED batches,
+        // but we shouldn't skip the whole thing just because *some* results exist.
+        
+        // The critical fix: We will calculate the batches first, then check which are done.
+        // But `processBatchesDirect` handles the splitting. 
+        // So we should pass the `processedBatches` set to `processBatchesDirect` and let it skip internally?
+        // OR, just for now, to ensure it runs, let's force it to run if there are network calls.
+        
+        const needsProcessing = true; // FORCE processing to ensure we loop through data. deduplication handles the rest.
         
         if (needsProcessing) {
           // Pre-filter network calls (remove static assets)
@@ -1139,6 +1176,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         
         // Get all stored results
         // Consolidate stored results to remove duplicates before final retrieval
+        console.log('CAST: Starting cleanup service to consolidate and deduplicate results...');
         await consolidateStoredResults(currentSessionId);
         const allResults = await getAllStoredResults(currentSessionId);
         
