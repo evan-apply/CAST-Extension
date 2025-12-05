@@ -993,16 +993,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }).join(',')
         ).join('\n');
 
-        const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-        // In extension service workers, URL.createObjectURL should be available
-        const blobUrl = URL.createObjectURL(blob);
+        // Use data URL to avoid objectURL limitations in MV3 service workers
+        const dataUrl = "data:text/csv;charset=utf-8," + encodeURIComponent(csvContent);
 
         chrome.downloads.download({
-          url: blobUrl,
+          url: dataUrl,
           filename: "CAST_network_calls.csv",
           saveAs: true
         }, (downloadId) => {
-          setTimeout(() => URL.revokeObjectURL(blobUrl), 2000);
           if (chrome.runtime.lastError) {
             sendResponse({ error: chrome.runtime.lastError.message });
           } else {
