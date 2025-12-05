@@ -19,10 +19,16 @@ The extension integrates with **Google's Gemini AI** (Gemini 3 Pro Preview) to i
 - **Smart Deduplication**: Prevents visiting the same page multiple times
 - **URL Normalization**: Handles query parameters and fragments intelligently
 
-### 🖱️ Manual Mode (New!)
+### 🖱️ Manual Mode
 - **User-Driven Capture**: Manually browse and interact with complex flows (login, checkout, etc.)
 - **Seamless Recording**: Captures all network traffic and interactions in the background while you browse
 - **Perfect for Authenticated Areas**: Bypass login screens manually and let CAST record the session
+
+### 📈 Analytics Strategy Recommendation (New!)
+- **Smart Strategy Generation**: Analyzes the current page's structure (DOM) using AI to recommend a tailored analytics tracking plan.
+- **Actionable Recommendations**: Suggests specific events to track (e.g., "Track 'Sign Up' button", "Track 'Contact' form") with priority levels.
+- **Visual Highlighting**: Click on a recommendation to instantly highlight the corresponding element on the webpage with an overlay.
+- **Interactive Guide**: Browse recommendations in the side panel and explore the page interactively.
 
 ### 🧠 Intelligent Network Analysis
 - **Gemini-Powered**: Uses advanced AI to identify technologies and analytics patterns
@@ -78,6 +84,12 @@ The extension integrates with **Google's Gemini AI** (Gemini 3 Pro Preview) to i
 3.  Browse the site naturally: log in, click buttons, fill forms, etc.
 4.  Click **Stop Manual Mode** when finished.
 
+#### Option C: Strategy Recommendation
+1.  Navigate to any page you want to analyze.
+2.  Click **Recommend Strategy**.
+3.  CAST will analyze the page structure and list recommended tracking events.
+4.  **Click on any recommendation** in the list to highlight the element on the page.
+
 ### 3. Analyze & Export
 1.  Click **Run AI Analysis**.
 2.  Watch the progress bar as the extension processes network data in batches.
@@ -93,13 +105,15 @@ CAST Extension
 │   ├── Crawl Orchestration & Manual Mode Logic
 │   ├── Network Traffic Capture (Chrome Debugger API)
 │   ├── Batch Processing & AI Integration
+│   ├── Strategy Generation (Gemini)
 │   └── Keep-Alive Mechanism
 │
 ├── Content Script (content/crawler.js)
 │   ├── Page Interaction Engine
 │   ├── Clickable Element Detection
 │   ├── Form & Search Automation
-│   └── DOM Analysis
+│   ├── Simplified DOM Extraction
+│   └── Visual Highlighting System
 │
 ├── Storage
 │   ├── IndexedDB (CAST_NetworkCalls_DB): Stores raw network calls & results
