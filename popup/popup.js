@@ -334,6 +334,13 @@ document.getElementById("recommendStrategy").onclick = () => {
     statusEl.textContent = `Found ${strategy.recommendations.length} recommendations.`;
     strategyBox.style.display = "block";
 
+    // Auto-highlight all recommendations by default (as requested)
+    const allHighlights = strategy.recommendations.map(rec => ({ selector: rec.selector, label: rec.eventName }));
+    chrome.runtime.sendMessage({ 
+        type: "highlight-all-elements", 
+        highlights: allHighlights
+    });
+
     strategy.recommendations.forEach(rec => {
       const item = document.createElement("div");
       item.style.padding = "10px";

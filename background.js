@@ -1010,7 +1010,7 @@ Format:
   "recommendations": [
     {
       "selector": "string (unique CSS selector)",
-      "eventName": "string (e.g., navigation_click, form_submit, cta_click)",
+      "eventName": "string (snake_case, e.g., navigation_click, form_submit)",
       "category": "string (e.g., Navigation, Conversion, Engagement)",
       "reasoning": "string (Why is this important to track?)",
       "priority": "High" | "Medium" | "Low"
@@ -1021,12 +1021,13 @@ Format:
 Rules:
 1. Focus on business-critical interactions: Sign-ups, Purchases, Contact forms, Main Navigation, Downloads.
 2. Identify "Call to Action" (CTA) buttons and links.
-3. Suggest standard event names (snake_case recommended).
-4. Use the provided 'tag', 'id', 'class', and 'context' to construct a reliable CSS selector.
-   - Prefer IDs if available.
-   - Use classes if unique enough.
-   - Use nth-of-type or parent context if necessary.
-   - Example: "nav > ul > li:nth-of-type(1) > a" or "#submit-button"
+3. Use consistent event naming conventions (snake_case). 
+   - Click events: [component]_[action] (e.g., main_nav_click, signup_btn_click)
+   - Form events: [form_name]_[action] (e.g., contact_form_submit)
+4. Construct CSS selectors:
+   - For **unique elements** (e.g., Sign Up button, Search bar), use ID or specific class: "#signup-btn", ".header-search".
+   - For **groups of elements** (e.g., Footer links, Product cards, Menu items), use a generalized selector that matches ALL of them: "footer a", ".nav-item", ".product-card".
+   - Avoid specific \`nth-of-type\` unless necessary to distinguish a unique element from a group.
 5. Do NOT suggest tracking every single element. Be strategic.
 `.trim();
 
@@ -1061,7 +1062,15 @@ Rules:
 
     const text = cand.content.parts.map((p) => p.text || "").join("");
     let cleanedText = text.trim();
-    if (cleanedText.startsWith("```")) {
+    
+    // More robust JSON extraction: find first '{' and last '}'
+    const firstBrace = cleanedText.indexOf('{');
+    const lastBrace = cleanedText.lastIndexOf('}');
+    
+    if (firstBrace !== -1 && lastBrace !== -1) {
+      cleanedText = cleanedText.substring(firstBrace, lastBrace + 1);
+    } else if (cleanedText.startsWith("```")) {
+      // Fallback to old logic just in case
       cleanedText = cleanedText.replace(/^```(?:json)?\s*\n?/, "");
       cleanedText = cleanedText.replace(/\n?```\s*$/, "");
       cleanedText = cleanedText.trim();
@@ -1092,9 +1101,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           return;
         }
 
-        const domResponse = await chrome.tabs.sendMessage(tab.id, { type: "get-page-structure" });
+        // Retry mechanism for content script communication
+        let domResponse = null;
+        let retries = 0;
+        while (!domResponse && retries < 3) {
+          try {
+            domResponse = await chrome.tabs.sendMessage(tab.id, { type: "get-page-structure" });
+          } catch (e) {
+            console.log(`Content script not ready (attempt ${retries + 1}), injecting...`);
+            try {
+              await chrome.scripting.executeScript({
+                target: { tabId: tab.id },
+                files: ['content/crawler.js']
+              });
+              await sleep(500); // Wait for script to initialize
+            } catch (injectError) {
+              console.error("Failed to inject content script:", injectError);
+            }
+          }
+          retries++;
+        }
+
         if (!domResponse || !domResponse.dom) {
-          sendResponse({ error: "Failed to retrieve page structure." });
+          sendResponse({ error: "Failed to retrieve page structure. Please refresh the page and try again." });
           return;
         }
 
@@ -1117,11 +1146,147 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
         const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
         if (tab && tab.id) {
-            chrome.tabs.sendMessage(tab.id, { 
-                type: "show-highlight", 
-                selector: msg.selector, 
-                label: msg.label 
-            });
+            // Use same retry/injection logic for highlighting
+            let retries = 0;
+            let success = false;
+            while (!success && retries < 3) {
+                try {
+                    await chrome.tabs.sendMessage(tab.id, { 
+                        type: "show-highlight", 
+                        selector: msg.selector, 
+                        label: msg.label 
+                    });
+                    success = true;
+                } catch (e) {
+                    try {
+                        await chrome.scripting.executeScript({
+                            target: { tabId: tab.id },
+                            files: ['content/crawler.js']
+                        });
+                        await sleep(500);
+                    } catch (err) {}
+                }
+                retries++;
+            }
+        }
+    })();
+    return false;
+  }
+  
+  if (msg.type === "highlight-all-elements") {
+    // Forward to content script to highlight multiple elements
+    (async () => {
+        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        if (tab && tab.id) {
+            let retries = 0;
+            let success = false;
+            while (!success && retries < 3) {
+                try {
+                    await chrome.tabs.sendMessage(tab.id, { 
+                        type: "show-highlight-batch", 
+                        highlights: msg.highlights 
+                    });
+                    success = true;
+                } catch (e) {
+                    try {
+                        await chrome.scripting.executeScript({
+                            target: { tabId: tab.id },
+                            files: ['content/crawler.js']
+                        });
+                        await sleep(500);
+                    } catch (err) {}
+                }
+                retries++;
+            }
+        }
+    })();
+    return false;
+  }
+
+  if (msg.type === "recommend-strategy") {
+    (async () => {
+      try {
+        // 1. Get API Key
+        const { geminiApiKey } = await chrome.storage.local.get("geminiApiKey");
+        if (!geminiApiKey) {
+          sendResponse({ error: "No API key found. Please configure it first." });
+          return;
+        }
+
+        // 2. Get DOM from active tab
+        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        if (!tab || !tab.id) {
+          sendResponse({ error: "No active tab found." });
+          return;
+        }
+
+        // Retry mechanism for content script communication
+        let domResponse = null;
+        let retries = 0;
+        while (!domResponse && retries < 3) {
+          try {
+            domResponse = await chrome.tabs.sendMessage(tab.id, { type: "get-page-structure" });
+          } catch (e) {
+            console.log(`Content script not ready (attempt ${retries + 1}), injecting...`);
+            try {
+              await chrome.scripting.executeScript({
+                target: { tabId: tab.id },
+                files: ['content/crawler.js']
+              });
+              await sleep(500); // Wait for script to initialize
+            } catch (injectError) {
+              console.error("Failed to inject content script:", injectError);
+            }
+          }
+          retries++;
+        }
+
+        if (!domResponse || !domResponse.dom) {
+          sendResponse({ error: "Failed to retrieve page structure. Please refresh the page and try again." });
+          return;
+        }
+
+        // 3. Call Gemini
+        const strategy = await generateAnalyticsStrategy(geminiApiKey, domResponse.dom);
+        
+        // 4. Return results
+        sendResponse({ success: true, strategy });
+
+      } catch (error) {
+        console.error("Strategy generation failed:", error);
+        sendResponse({ error: error.message });
+      }
+    })();
+    return true; // Async response
+  }
+  
+  if (msg.type === "highlight-element") {
+    // Forward to content script
+    (async () => {
+        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        if (tab && tab.id) {
+            // Use same retry/injection logic for highlighting
+            let retries = 0;
+            let success = false;
+            while (!success && retries < 3) {
+                try {
+                    await chrome.tabs.sendMessage(tab.id, { 
+                        type: "show-highlight", 
+                        selector: msg.selector, 
+                        label: msg.label 
+                    });
+                    success = true;
+                } catch (e) {
+                    try {
+                        await chrome.scripting.executeScript({
+                            target: { tabId: tab.id },
+                            files: ['content/crawler.js']
+                        });
+                        await sleep(500);
+                    } catch (err) {}
+                }
+                retries++;
+            }
         }
     })();
     return false;
@@ -2350,7 +2515,14 @@ Rules:
     
     // Strip markdown code blocks if present (Gemini sometimes wraps JSON in ```json ... ```)
     let cleanedText = text.trim();
-    if (cleanedText.startsWith("```")) {
+    
+    // Find JSON object start and end
+    const firstBrace = cleanedText.indexOf('{');
+    const lastBrace = cleanedText.lastIndexOf('}');
+    
+    if (firstBrace !== -1 && lastBrace !== -1) {
+      cleanedText = cleanedText.substring(firstBrace, lastBrace + 1);
+    } else if (cleanedText.startsWith("```")) {
       // Remove opening ```json or ```
       cleanedText = cleanedText.replace(/^```(?:json)?\s*\n?/, "");
       // Remove closing ```

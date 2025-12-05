@@ -596,57 +596,75 @@
     }
   }
 
-  // Highlight element with overlay
+  // Highlight element(s) with overlay
   function highlightElement(selector, label) {
-    // Remove existing highlights
-    document.querySelectorAll('.cast-strategy-overlay').forEach(el => el.remove());
-
     try {
-      const el = document.querySelector(selector);
-      if (!el) {
+      // Use querySelectorAll to handle groups of elements
+      const elements = document.querySelectorAll(selector);
+      
+      if (elements.length === 0) {
         console.warn(`CAST: Element not found for selector: ${selector}`);
         return;
       }
 
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // Only scroll to the first element if highlighting a single selector
+      if (label !== "batch" && elements.length > 0) {
+          elements[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
 
-      const rect = el.getBoundingClientRect();
-      const overlay = document.createElement('div');
-      overlay.className = 'cast-strategy-overlay';
-      overlay.style.position = 'absolute';
-      overlay.style.top = `${rect.top + window.scrollY}px`;
-      overlay.style.left = `${rect.left + window.scrollX}px`;
-      overlay.style.width = `${rect.width}px`;
-      overlay.style.height = `${rect.height}px`;
-      overlay.style.backgroundColor = 'rgba(52, 152, 219, 0.3)'; // Blue overlay
-      overlay.style.border = '2px solid #3498db';
-      overlay.style.zIndex = '10000';
-      overlay.style.pointerEvents = 'none'; // Allow clicking through
-      overlay.style.boxSizing = 'border-box';
-      
-      // Add label
-      const labelDiv = document.createElement('div');
-      labelDiv.textContent = label;
-      labelDiv.style.position = 'absolute';
-      labelDiv.style.top = '-25px';
-      labelDiv.style.left = '0';
-      labelDiv.style.backgroundColor = '#3498db';
-      labelDiv.style.color = 'white';
-      labelDiv.style.padding = '2px 6px';
-      labelDiv.style.fontSize = '12px';
-      labelDiv.style.borderRadius = '4px';
-      labelDiv.style.whiteSpace = 'nowrap';
-      labelDiv.style.zIndex = '10001';
-      
-      overlay.appendChild(labelDiv);
-      document.body.appendChild(overlay);
-      
-      // Auto-remove after 5 seconds? Or keep until next click?
-      // Let's keep until next click (handled by removing existing highlights at start)
+      elements.forEach(el => {
+          const rect = el.getBoundingClientRect();
+          
+          // Skip non-visible elements
+          if (rect.width === 0 || rect.height === 0) return;
+
+          const overlay = document.createElement('div');
+          overlay.className = 'cast-strategy-overlay';
+          overlay.style.position = 'absolute';
+          overlay.style.top = `${rect.top + window.scrollY}px`;
+          overlay.style.left = `${rect.left + window.scrollX}px`;
+          overlay.style.width = `${rect.width}px`;
+          overlay.style.height = `${rect.height}px`;
+          overlay.style.backgroundColor = 'rgba(52, 152, 219, 0.2)'; // Lighter Blue overlay
+          overlay.style.border = '2px solid #3498db';
+          overlay.style.zIndex = '10000';
+          overlay.style.pointerEvents = 'none'; // Allow clicking through
+          overlay.style.boxSizing = 'border-box';
+          
+          // Add label (only for the first element if it's a large group, or maybe all?)
+          // Let's add to all for clarity, but maybe small
+          if (label && label !== "batch") {
+              const labelDiv = document.createElement('div');
+              labelDiv.textContent = label;
+              labelDiv.style.position = 'absolute';
+              labelDiv.style.top = '-20px'; // Slightly closer
+              labelDiv.style.left = '0';
+              labelDiv.style.backgroundColor = '#3498db';
+              labelDiv.style.color = 'white';
+              labelDiv.style.padding = '1px 4px';
+              labelDiv.style.fontSize = '10px';
+              labelDiv.style.borderRadius = '3px';
+              labelDiv.style.whiteSpace = 'nowrap';
+              labelDiv.style.zIndex = '10001';
+              overlay.appendChild(labelDiv);
+          }
+          
+          document.body.appendChild(overlay);
+      });
       
     } catch (e) {
       console.error('CAST: Error highlighting element:', e);
     }
+  }
+  
+  function highlightBatch(items) {
+      // Clear existing
+      document.querySelectorAll('.cast-strategy-overlay').forEach(el => el.remove());
+      
+      // Highlight all
+      items.forEach(item => {
+          highlightElement(item.selector, item.label);
+      });
   }
 
   // Generate simplified DOM for AI analysis
@@ -758,7 +776,15 @@
     }
     
     if (msg.type === "show-highlight") {
+        // Clear existing first
+        document.querySelectorAll('.cast-strategy-overlay').forEach(el => el.remove());
         highlightElement(msg.selector, msg.label);
+        sendResponse({ success: true });
+        return false;
+    }
+    
+    if (msg.type === "show-highlight-batch") {
+        highlightBatch(msg.highlights);
         sendResponse({ success: true });
         return false;
     }
