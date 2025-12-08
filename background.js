@@ -1163,7 +1163,13 @@ Implementation expectations for codeSnippet:
       cleanedText = cleanedText.trim();
     }
 
-    return JSON.parse(cleanedText);
+    // Parse with a fallback sanitizer for bad escape sequences
+    try {
+      return JSON.parse(cleanedText);
+    } catch (e) {
+      const sanitized = cleanedText.replace(/\\(?!["\\/bfnrtu])/g, "\\\\");
+      return JSON.parse(sanitized);
+    }
   } catch (error) {
     console.error('CAST: Error generating analytics strategy:', error);
     throw error;
