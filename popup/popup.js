@@ -334,7 +334,8 @@ document.getElementById("startManual").onclick = () => {
 };
 
 document.getElementById("recommendStrategy").onclick = () => {
-  showStatus("Analyzing page structure for recommendations...");
+  // Keep status visible until the request finishes (no auto-hide)
+  showStatus("Analyzing page structure for recommendations...", 0);
   
   const strategyBox = document.getElementById("strategyBox");
   const strategyList = document.getElementById("strategyList");
