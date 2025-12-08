@@ -15,6 +15,7 @@ const statsGrid = document.getElementById("statsGrid");
 const statNetwork = document.getElementById("statNetwork");
 const statTech = document.getElementById("statTech");
 const statAnalytics = document.getElementById("statAnalytics");
+const statUrls = document.getElementById("statUrls");
 
 let isAnalyzing = false;
 let statsInterval = null;
@@ -144,6 +145,7 @@ function showStatsPanel(stats) {
     statNetwork.textContent = stats.networkCount ?? 0;
     statTech.textContent = stats.techCount ?? 0;
     statAnalytics.textContent = stats.analyticsCount ?? 0;
+    if (statUrls) statUrls.textContent = stats.uniqueUrlCount ?? 0;
     progressCurrent.textContent = "Ready for AI analysis.";
   } else {
     progressCurrent.textContent = "Fetching database stats…";
@@ -160,6 +162,7 @@ function refreshStats() {
         networkCount: res.networkCount,
         techCount: res.techCount,
         analyticsCount: res.analyticsCount,
+        uniqueUrlCount: res.uniqueUrlCount,
         updatedLabel
       });
     } else {

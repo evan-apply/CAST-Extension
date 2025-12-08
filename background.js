@@ -400,12 +400,13 @@ async function addEntriesToStore(storeName, entries) {
 async function getDatabaseStats(sessionId) {
   try {
     await initNetworkCallsDB();
-    const [networkCount, techCount, analyticsCount] = await Promise.all([
+    const [networkCount, techCount, analyticsCount, uniqueUrlCount] = await Promise.all([
       countStoreEntries('networkCalls', sessionId),
       countStoreEntries('techStackResults', sessionId),
-      countStoreEntries('analyticsEventsResults', sessionId)
+      countStoreEntries('analyticsEventsResults', sessionId),
+      countStoreEntries('uniqueUrls', sessionId)
     ]);
-    return { networkCount, techCount, analyticsCount };
+    return { networkCount, techCount, analyticsCount, uniqueUrlCount };
   } catch (error) {
     console.error('Error fetching DB stats:', error);
     throw error;

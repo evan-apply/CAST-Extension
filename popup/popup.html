@@ -163,7 +163,7 @@
       #statsGrid {
         margin-top: 12px;
         display: grid;
-        grid-template-columns: repeat(3, 1fr);
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 8px;
       }
       
@@ -417,6 +417,10 @@
           <div class="stat-card">
             <span class="stat-label">Analytics Events</span>
             <span class="stat-value" id="statAnalytics">0</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Unique URLs</span>
+            <span class="stat-value" id="statUrls">0</span>
           </div>
         </div>
       </div>
