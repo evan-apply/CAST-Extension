@@ -334,6 +334,9 @@ document.getElementById("recommendStrategy").onclick = () => {
     statusEl.textContent = `Found ${strategy.recommendations.length} recommendations.`;
     strategyBox.style.display = "block";
 
+    // Store current strategy for CSV download
+    window.currentStrategy = strategy.recommendations;
+
     // Auto-highlight all recommendations by default (as requested)
     const allHighlights = strategy.recommendations.map(rec => ({ selector: rec.selector, label: rec.eventName }));
     chrome.runtime.sendMessage({ 
@@ -462,6 +465,28 @@ document.getElementById("recommendStrategy").onclick = () => {
 
 document.getElementById("closeStrategy").onclick = () => {
   document.getElementById("strategyBox").style.display = "none";
+};
+
+document.getElementById("downloadStrategy").onclick = () => {
+  if (!window.currentStrategy || !window.currentStrategy.length) {
+    return;
+  }
+  
+  const rows = [["Event Name", "Category", "Reasoning", "Priority", "Trigger Type", "Trigger Value", "Selector", "Code Snippet"]];
+  window.currentStrategy.forEach(rec => {
+    rows.push([
+      rec.eventName || "",
+      rec.category || "",
+      rec.reasoning || "",
+      rec.priority || "",
+      rec.triggerType || "CSS Selector",
+      rec.triggerValue || rec.selector || "",
+      rec.selector || "",
+      rec.codeSnippet || ""
+    ]);
+  });
+  
+  downloadCSV("CAST_analytics_strategy.csv", rows);
 };
 
 document.getElementById("downloadJSON").onclick = () => {

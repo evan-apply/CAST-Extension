@@ -999,8 +999,8 @@ async function generateAnalyticsStrategy(apiKey, domData) {
     encodeURIComponent(apiKey);
 
   const systemPrompt = `
-You are an expert Digital Analytics Strategist.
-Your goal is to analyze a simplified DOM structure of a webpage and recommend a comprehensive analytics tracking strategy.
+You are an expert Digital Analytics Strategist (specializing in Google Analytics 4 and E-commerce).
+Your goal is to analyze a simplified DOM structure of a webpage and recommend a comprehensive analytics tracking strategy following GA4 best practices.
 
 Input: A JSON list of simplified DOM elements (tag, id, class, text, context).
 
@@ -1010,9 +1010,9 @@ Format:
   "recommendations": [
     {
       "selector": "string (unique CSS selector)",
-      "eventName": "string (snake_case, e.g., navigation_click, form_submit)",
-      "category": "string (e.g., Navigation, Conversion, Engagement)",
-      "reasoning": "string (Why is this important to track?)",
+      "eventName": "string (snake_case, GA4 recommended event if applicable)",
+      "category": "string (e.g., Navigation, Conversion, User Journey, Engagement)",
+      "reasoning": "string (Why is this important? How does it fit into the user journey?)",
       "priority": "High" | "Medium" | "Low",
       "codeSnippet": "string (JavaScript dataLayer.push code)",
       "triggerType": "string (CSS Selector or Text Match)",
@@ -1022,22 +1022,30 @@ Format:
 }
 
 Rules:
-1. Focus on business-critical interactions: Sign-ups, Purchases, Contact forms, Main Navigation, Downloads.
-2. Identify "Call to Action" (CTA) buttons and links.
-3. Use consistent event naming conventions (snake_case). 
-   - Click events: [component]_[action] (e.g., main_nav_click, signup_btn_click)
-   - Form events: [form_name]_[action] (e.g., contact_form_submit)
-4. Construct CSS selectors:
-   - For **unique elements** (e.g., Sign Up button, Search bar), use ID or specific class: "#signup-btn", ".header-search".
-   - For **groups of elements** (e.g., Footer links, Product cards, Menu items), use a generalized selector that matches ALL of them: "footer a", ".nav-item", ".product-card".
-   - Avoid specific \`nth-of-type\` unless necessary to distinguish a unique element from a group.
-5. Do NOT suggest tracking every single element. Be strategic.
-6. For "codeSnippet", provide a valid JavaScript snippet for Google Tag Manager dataLayer push.
-   - Use standard GA4 schema: event, link_url, link_text, form_id, etc.
-   - Example: "window.dataLayer.push({ event: 'navigation_click', link_text: '{{Click Text}}', link_url: '{{Click URL}}' });"
-7. For "triggerType" and "triggerValue", specify how to configure the trigger in GTM.
-   - "CSS Selector": Use the CSS selector from rule #4.
-   - "Text Match": Use the button text if it's unique (e.g., "Sign Up").
+1. **GA4 & User Journey Focus**:
+   - Prioritize standard GA4 events: \`view_item\`, \`add_to_cart\`, \`begin_checkout\`, \`generate_lead\`, \`search\`, \`select_content\`.
+   - Map interactions to the user journey: Awareness -> Consideration -> Conversion -> Retention.
+   - For e-commerce pages, ALWAYS suggest product interactions (e.g., clicking a product card = \`select_item\`).
+   - For lead gen, focus on form steps and progression.
+
+2. **Business-Critical Interactions**:
+   - Sign-ups, Purchases, Contact forms, Main Navigation, Downloads.
+   - Call to Action (CTA) buttons.
+
+3. **Consistent Naming**:
+   - Use standard GA4 event names where possible.
+   - For custom events, use snake_case: \`[component]_[action]\` (e.g., \`main_nav_click\`, \`hero_cta_click\`).
+
+4. **Selectors**:
+   - Unique elements: ID or specific class.
+   - Groups: Generalized selector (e.g., \`footer a\`, \`.product-card\`).
+
+5. **Implementation Details**:
+   - Provide a valid \`dataLayer.push\` snippet.
+   - Include relevant parameters (e.g., \`item_name\`, \`link_url\`, \`link_text\`, \`form_id\`).
+   - Example: "window.dataLayer.push({ event: 'select_content', content_type: 'navigation', item_id: '{{Click Text}}' });"
+
+6. Be strategic: Don't track everything. Focus on what drives value and insight.
 `.trim();
 
   const body = {
