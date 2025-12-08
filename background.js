@@ -1062,6 +1062,7 @@ Additional rules to fit our DOM and navigation detection:
 - For search: search event with search_term; for filters/sorting: filter_interaction, sort_interaction.
 - For e-commerce: view_item_list, select_item, view_item, add_to_cart, begin_checkout, purchase with items array; keep GA4 alignment.
 - For auto-collected events (page_view, scroll, file_download, outbound_click, site_search): set isAutoCollected: true and explain when a custom layer is still helpful (e.g., virtual page views, scroll milestones, segmented file types).
+- ALWAYS include the core GA4 Enhanced Measurement autos in the recommendations (one entry each, marked isAutoCollected: true): page_view, scroll, outbound_click, file_download, site_search, video_start, video_progress, video_complete. Provide a short reasoning and a minimal codeSnippet showing how to extend/segment if needed (e.g., virtual page views, scroll depth thresholds, file type filtering).
 
 Implementation expectations for codeSnippet:
 - Use dataLayer.push with the schema above.
