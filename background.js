@@ -762,6 +762,7 @@ function trimPayloadToLimit(payload, maxTokens) {
 
 // Simple self-ping to keep alive during analysis
 let keepAliveInterval;
+let aiCancelRequested = false;
 function startKeepAlive() {
   if (keepAliveInterval) clearInterval(keepAliveInterval);
   keepAliveInterval = setInterval(() => {
@@ -783,6 +784,7 @@ async function processBatchesDirect(apiKey, networkCalls, sessionId, progressCal
   if (!networkCallsDB) await initNetworkCallsDB();
   
   const batches = []; // Move variable outside try block
+  let processedBatches = 0;
   
   try {
     const MAX_TOKENS_PER_BATCH = 100000; // Drastically reduced limit (100k) to prevent 1M limit error
@@ -821,6 +823,10 @@ async function processBatchesDirect(apiKey, networkCalls, sessionId, progressCal
   
   // Process each batch
   for (let i = 0; i < batches.length; i++) {
+    if (aiCancelRequested) {
+      console.warn('CAST: AI analysis cancelled before batch', i + 1);
+      break;
+    }
     const batch = batches[i];
     const batchId = `batch_${i + 1}_${Date.now()}`; // Unique ID for this run
     
@@ -874,6 +880,7 @@ async function processBatchesDirect(apiKey, networkCalls, sessionId, progressCal
       } else {
         console.warn(`CAST: Batch ${i + 1} returned no results`);
       }
+      processedBatches = i + 1;
     } catch (error) {
       console.error(`CAST: Error processing batch ${i + 1}:`, error);
       // Continue with next batch
@@ -894,7 +901,7 @@ async function processBatchesDirect(apiKey, networkCalls, sessionId, progressCal
     stopKeepAlive();
   }
   
-  return { batchesProcessed: batches.length, totalCalls: networkCalls.length };
+  return { batchesProcessed: processedBatches, totalCalls: networkCalls.length, cancelled: aiCancelRequested };
 }
 
 // Get all stored results for a session
@@ -1395,6 +1402,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
 
+  if (msg.type === "ai-cancel") {
+    aiCancelRequested = true;
+    stopKeepAlive();
+    sendResponse({ cancelled: true });
+    return false;
+  }
+
   if (msg.type === "get-db-stats") {
     (async () => {
       try {
@@ -1595,6 +1609,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ error: "No Gemini API key saved. Please save it first." });
         return;
       }
+      aiCancelRequested = false;
       
       // Restore session ID if not set (e.g., after extension reload)
       if (!currentSessionId && res.CAST_currentSessionId) {
@@ -1716,7 +1731,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           });
           
           // Process in batches and store results
-          await processBatchesDirect(apiKey, filteredCalls, currentSessionId, progressCallback);
+          const result = await processBatchesDirect(apiKey, filteredCalls, currentSessionId, progressCallback);
+          if (result?.cancelled) {
+            sendResponse({ error: "AI analysis cancelled." });
+            return;
+          }
         } else {
           console.log('CAST: Using existing results from previous analysis');
           chrome.storage.local.set({

@@ -18,6 +18,7 @@ const statNetwork = document.getElementById("statNetwork");
 const statTech = document.getElementById("statTech");
 const statAnalytics = document.getElementById("statAnalytics");
 const statUrls = document.getElementById("statUrls");
+const stopAIButton = document.getElementById("stopAI");
 
 let isAnalyzing = false;
 let statsInterval = null;
@@ -194,7 +195,7 @@ function updateProgressBar(progress) {
   
   isAnalyzing = true;
   progressContainer.style.display = "block";
-  statsGrid.style.display = "none";
+  statsGrid.style.display = "grid";
   progressBarWrapper.style.display = "block";
   
   progressStage.textContent = progress.stage || "Processing...";
@@ -575,26 +576,28 @@ function handleAnalysisComplete() {
   progressBarWrapper.style.display = "none";
   statsGrid.style.display = "grid";
   progressBar.style.width = "0%";
+  if (stopAIButton) stopAIButton.style.display = "none";
   chrome.storage.local.remove(["CAST_ragProgress"]);
   refreshStats();
 }
 
 document.getElementById("runAI").onclick = () => {
-  statusEl.textContent = "Running AI network recon…";
+  showStatus("Running AI network recon…");
   reportBox.textContent = "";
   isAnalyzing = true;
   progressBarWrapper.style.display = "block";
-  statsGrid.style.display = "none";
+  statsGrid.style.display = "grid";
+  if (stopAIButton) stopAIButton.style.display = "block";
   updateProgressBar({ stage: "Preparing batches…", percentage: 0, processed: 0, total: 100, current: "Initializing AI analysis" });
   
   chrome.runtime.sendMessage({ type: "ai-summary" }, (res) => {
     handleAnalysisComplete();
     if (!res) {
-      statusEl.textContent = "No response from background.";
+      showStatus("No response from background.");
       return;
     }
     if (res.error) {
-      statusEl.textContent = "AI error: " + res.error;
+      showStatus("AI error: " + res.error);
       return;
     }
 
@@ -602,7 +605,7 @@ document.getElementById("runAI").onclick = () => {
     const tech = res.tech_stack || [];
     const analytics = res.analytics_events || [];
 
-    statusEl.textContent = "AI recon complete. CSVs downloaded.";
+    showStatus("AI recon complete. CSVs downloaded.");
     reportBox.textContent = summaryMarkdown;
 
     if (tech.length) {
@@ -633,3 +636,13 @@ document.getElementById("runAI").onclick = () => {
     }
   });
 };
+
+if (stopAIButton) {
+  stopAIButton.addEventListener("click", () => {
+    showStatus("Stopping AI analysis…");
+    chrome.runtime.sendMessage({ type: "ai-cancel" }, () => {
+      handleAnalysisComplete();
+      showStatus("AI analysis stopped.");
+    });
+  });
+}
