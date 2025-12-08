@@ -370,7 +370,9 @@ document.getElementById("recommendStrategy").onclick = () => {
     window.currentStrategy = strategy.recommendations;
 
     // Auto-highlight all recommendations by default (as requested)
-    const allHighlights = strategy.recommendations.map(rec => ({ selector: rec.selector, label: rec.eventName }));
+    const allHighlights = strategy.recommendations
+      .filter(rec => rec.selector && rec.selector !== 'window' && rec.selector !== 'document')
+      .map(rec => ({ selector: rec.selector, label: rec.eventName }));
     chrome.runtime.sendMessage({ 
         type: "highlight-all-elements", 
         highlights: allHighlights
