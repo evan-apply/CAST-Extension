@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "CAST 3.4.0",
+  "name": "CAST",
   "version": "3.3.0",
   "permissions": ["debugger","tabs","activeTab","scripting","storage","downloads", "sidePanel"],
   "host_permissions": ["<all_urls>"],
