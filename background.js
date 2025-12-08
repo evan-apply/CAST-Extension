@@ -456,13 +456,17 @@ function dedupeTechRecords(records = []) {
         category: item.category || '',
         confidence: Number(item.confidence) || 0,
         evidence: new Set(evidenceItems.filter(Boolean)),
-        occurrences: 1
+        occurrences: 1,
+        accountId: item.accountId || item.account_id || ''
       });
     } else {
       const existing = map.get(key);
       existing.confidence = Math.max(existing.confidence, Number(item.confidence) || 0);
       evidenceItems.filter(Boolean).forEach((ev) => existing.evidence.add(ev));
       existing.occurrences += 1;
+      if (!existing.accountId && (item.accountId || item.account_id)) {
+        existing.accountId = item.accountId || item.account_id;
+      }
     }
   }
   return Array.from(map.values()).map((entry) => ({
@@ -470,7 +474,8 @@ function dedupeTechRecords(records = []) {
     category: entry.category,
     confidence: entry.confidence.toFixed(2),
     occurrences: entry.occurrences,
-    evidence: Array.from(entry.evidence).join(' | ')
+    evidence: Array.from(entry.evidence).join(' | '),
+    accountId: entry.accountId || ''
   }));
 }
 
@@ -505,10 +510,10 @@ async function buildTechStackExport(sessionId) {
   const records = await fetchStoreRecords('techStackResults', sessionId);
   if (!records.length) return [];
   const deduped = dedupeTechRecords(records);
-  const rows = [["Technology", "Category", "Top Confidence", "Occurrences", "Evidence"]];
+  const rows = [["Technology", "Category", "Top Confidence", "Occurrences", "Account ID", "Evidence"]];
   deduped.sort((a, b) => Number(b.confidence) - Number(a.confidence));
   deduped.forEach((entry) => {
-    rows.push([entry.name, entry.category, entry.confidence, String(entry.occurrences), entry.evidence]);
+    rows.push([entry.name, entry.category, entry.confidence, String(entry.occurrences), entry.accountId || "", entry.evidence]);
   });
   return rows;
 }
@@ -598,6 +603,7 @@ async function storeAIResults(sessionId, batchId, techStack, analyticsEvents) {
           category: item.category || '',
           confidence: item.confidence || 0,
           evidence: item.evidence || [],
+          accountId: item.account_id || item.accountId || null,
           timestamp
         });
         request.onsuccess = () => resolve();
@@ -2586,6 +2592,7 @@ interface AIReconResult {
     category: string;    // "framework", "cdn", "cms", "analytics", "infrastructure", "other"
     confidence: number;  // 0.0 - 1.0
     evidence: string[];  // short strings explaining why you believe this
+    account_id?: string; // include if you detect account/property/site IDs for analytics tools
   }[];
   analytics_events: {
     provider: string;
