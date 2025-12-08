@@ -325,31 +325,36 @@ document.getElementById("startManual").onclick = () => {
 };
 
 document.getElementById("recommendStrategy").onclick = () => {
-  statusEl.textContent = "Analyzing page structure for recommendations...";
-  statusEl.style.display = "block";
+  showStatus("Analyzing page structure for recommendations...");
   
   const strategyBox = document.getElementById("strategyBox");
   const strategyList = document.getElementById("strategyList");
   strategyBox.style.display = "none";
   strategyList.innerHTML = "";
 
+  // Fallback timeout so UI doesn't stay stuck
+  const timeoutId = setTimeout(() => {
+    showStatus("Strategy request timed out. Please try again.");
+  }, 15000);
+
   chrome.runtime.sendMessage({ type: "recommend-strategy" }, (res) => {
+    clearTimeout(timeoutId);
     if (!res) {
-      statusEl.textContent = "No response from background.";
+      showStatus("No response from background.");
       return;
     }
     if (res.error) {
-      statusEl.textContent = "Strategy Error: " + res.error;
+      showStatus("Strategy Error: " + res.error);
       return;
     }
     
     const strategy = res.strategy;
     if (!strategy || !strategy.recommendations || strategy.recommendations.length === 0) {
-      statusEl.textContent = "No specific recommendations found for this page.";
+      showStatus("No specific recommendations found for this page.");
       return;
     }
 
-    statusEl.textContent = `Found ${strategy.recommendations.length} recommendations.`;
+    showStatus(`Found ${strategy.recommendations.length} recommendations.`);
     strategyBox.style.display = "block";
 
     // Store current strategy for CSV download
