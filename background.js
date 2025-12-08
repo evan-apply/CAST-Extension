@@ -1035,7 +1035,7 @@ chrome.runtime.onConnect.addListener((port) => {
 // Generate analytics strategy recommendation
 async function generateAnalyticsStrategy(apiKey, domData) {
   const endpoint =
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent?key=" +
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" +
     encodeURIComponent(apiKey);
 
   const systemPrompt = `
