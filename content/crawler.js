@@ -599,9 +599,21 @@
   // Highlight element(s) with overlay
   function highlightElement(selector, label) {
     try {
+      // Skip invalid/global selectors
+      if (!selector || selector === 'window' || selector === 'document') {
+        console.warn(`CAST: Skipping highlight for invalid selector: ${selector}`);
+        return;
+      }
+
+      let elements;
+      try {
+        elements = document.querySelectorAll(selector);
+      } catch (err) {
+        console.warn(`CAST: Invalid selector, cannot query: ${selector}`, err);
+        return;
+      }
+
       // Use querySelectorAll to handle groups of elements
-      const elements = document.querySelectorAll(selector);
-      
       if (elements.length === 0) {
         console.warn(`CAST: Element not found for selector: ${selector}`);
         return;
