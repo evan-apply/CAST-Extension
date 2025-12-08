@@ -19,15 +19,27 @@ const statTech = document.getElementById("statTech");
 const statAnalytics = document.getElementById("statAnalytics");
 const statUrls = document.getElementById("statUrls");
 const stopAIButton = document.getElementById("stopAI");
+let statusHideTimeout = null;
 
 let isAnalyzing = false;
 let statsInterval = null;
 
-function showStatus(message) {
+function showStatus(message, durationMs = 8000) {
   if (!statusEl || !statusText) return;
+  // Clear any pending auto-hide
+  if (statusHideTimeout) {
+    clearTimeout(statusHideTimeout);
+    statusHideTimeout = null;
+  }
   if (message) {
     statusText.textContent = message;
     statusEl.style.display = "flex";
+    if (durationMs > 0) {
+      statusHideTimeout = setTimeout(() => {
+        statusText.textContent = "";
+        statusEl.style.display = "none";
+      }, durationMs);
+    }
   } else {
     statusText.textContent = "";
     statusEl.style.display = "none";
@@ -35,7 +47,7 @@ function showStatus(message) {
 }
 
 if (statusClose) {
-  statusClose.addEventListener("click", () => showStatus(""));
+  statusClose.addEventListener("click", () => showStatus("", 0));
 }
 
 function setCollapsibleState(expanded) {
@@ -121,7 +133,7 @@ function restoreCrawlState() {
   window.statusPollInterval = setInterval(() => {
     chrome.storage.local.get(["CAST_crawlStatus", "CAST_crawlActive"], (res) => {
       if (res.CAST_crawlActive && res.CAST_crawlStatus) {
-        statusEl.textContent = res.CAST_crawlStatus;
+        showStatus(res.CAST_crawlStatus);
         statusEl.style.display = "block";
       }
     });
@@ -284,15 +296,13 @@ apiKeyInput.addEventListener("input", () => {
 document.getElementById("start").onclick = () => {
   const depth = parseInt(depthInput.value, 10);
   if (isNaN(depth) || depth < 0 || depth > 5) {
-    statusEl.textContent = "Please enter a valid depth (0-5).";
-    statusEl.style.display = "block";
+  showStatus("Please enter a valid depth (0-5).");
     return;
   }
   const limitValue = pageLimitSelect.value;
   const pageLimit = limitValue === "all" ? null : parseInt(limitValue, 10);
   const limitLabel = limitValue === "all" ? "all pages" : `${limitValue} pages`;
-  statusEl.textContent = `Starting crawl (depth ${depth}, limit ${limitLabel})… browser will navigate within this domain.`;
-  statusEl.style.display = "block";
+  showStatus(`Starting crawl (depth ${depth}, limit ${limitLabel})… browser will navigate within this domain.`);
   reportBox.textContent = "";
   chrome.storage.local.set({ 
     CAST_crawlDepth: depth,
@@ -308,15 +318,14 @@ document.getElementById("startManual").onclick = () => {
   if (isRunning) {
     chrome.runtime.sendMessage({ type: "manual-stop" });
     btn.textContent = "Start Manual Mode";
-    statusEl.textContent = "Manual mode stopped.";
+    showStatus("Manual mode stopped.");
   } else {
-    statusEl.textContent = "Starting Manual Mode... browser is ready for your interactions.";
-    statusEl.style.display = "block";
+    showStatus("Starting Manual Mode... browser is ready for your interactions.");
     reportBox.textContent = "";
     
     chrome.runtime.sendMessage({ type: "manual-start" }, (res) => {
       if (res && res.error) {
-        statusEl.textContent = "Error: " + res.error;
+        showStatus("Error: " + res.error);
         return;
       }
       btn.textContent = "Stop Manual Mode";
@@ -533,45 +542,42 @@ document.getElementById("downloadStrategy").onclick = () => {
 };
 
 document.getElementById("downloadJSON").onclick = () => {
-  statusEl.textContent = "Preparing raw network export…";
-  statusEl.style.display = "block";
+  showStatus("Preparing raw network export…");
   chrome.runtime.sendMessage({ type: "download-network-csv" }, (res) => {
     if (!res) {
-      statusEl.textContent = "No response from background.";
+      showStatus("No response from background.");
       return;
     }
     if (res.error) {
-      statusEl.textContent = "Download error: " + res.error;
+      showStatus("Download error: " + res.error);
       return;
     }
-    statusEl.textContent = `Raw network calls download started (${res.count || 0} calls).`;
+    showStatus(`Raw network calls download started (${res.count || 0} calls).`);
   });
 };
 
 document.getElementById("downloadTech").onclick = () => {
-  statusEl.textContent = "Preparing consolidated tech stack export…";
-  statusEl.style.display = "block";
+  showStatus("Preparing consolidated tech stack export…");
   chrome.runtime.sendMessage({ type: "export-tech-csv" }, (res) => {
     if (!res || res.error) {
-      statusEl.textContent = res?.error || "Unable to export tech stack.";
+      showStatus(res?.error || "Unable to export tech stack.");
       return;
     }
     downloadCSV(res.filename || "CAST_tech_stack_consolidated.csv", res.rows || []);
-    statusEl.textContent = `Tech stack export ready (${(res.rows?.length || 0) - 1} items).`;
+    showStatus(`Tech stack export ready (${(res.rows?.length || 0) - 1} items).`);
     handleAnalysisComplete();
   });
 };
 
 document.getElementById("downloadAnalytics").onclick = () => {
-  statusEl.textContent = "Preparing consolidated analytics export…";
-  statusEl.style.display = "block";
+  showStatus("Preparing consolidated analytics export…");
   chrome.runtime.sendMessage({ type: "export-analytics-csv" }, (res) => {
     if (!res || res.error) {
-      statusEl.textContent = res?.error || "Unable to export analytics events.";
+      showStatus(res?.error || "Unable to export analytics events.");
       return;
     }
     downloadCSV(res.filename || "CAST_analytics_events_consolidated.csv", res.rows || []);
-    statusEl.textContent = `Analytics events export ready (${(res.rows?.length || 0) - 1} events).`;
+    showStatus(`Analytics events export ready (${(res.rows?.length || 0) - 1} events).`);
     handleAnalysisComplete();
   });
 };
