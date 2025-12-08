@@ -335,7 +335,7 @@ document.getElementById("recommendStrategy").onclick = () => {
   // Fallback timeout so UI doesn't stay stuck
   const timeoutId = setTimeout(() => {
     showStatus("Strategy request timed out. Please try again.");
-  }, 15000);
+  }, 45000); // allow more time for large pages
 
   chrome.runtime.sendMessage({ type: "recommend-strategy" }, (res) => {
     clearTimeout(timeoutId);
