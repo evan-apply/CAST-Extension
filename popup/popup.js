@@ -1,4 +1,6 @@
 const statusEl = document.getElementById("status");
+const statusText = document.getElementById("statusText");
+const statusClose = document.getElementById("statusClose");
 const reportBox = document.getElementById("reportBox");
 const apiKeyInput = document.getElementById("apiKey");
 const depthInput = document.getElementById("crawlDepth");
@@ -19,6 +21,21 @@ const statUrls = document.getElementById("statUrls");
 
 let isAnalyzing = false;
 let statsInterval = null;
+
+function showStatus(message) {
+  if (!statusEl || !statusText) return;
+  if (message) {
+    statusText.textContent = message;
+    statusEl.style.display = "flex";
+  } else {
+    statusText.textContent = "";
+    statusEl.style.display = "none";
+  }
+}
+
+if (statusClose) {
+  statusClose.addEventListener("click", () => showStatus(""));
+}
 
 function setCollapsibleState(expanded) {
   if (!inputContent) return;
@@ -65,25 +82,23 @@ function restoreCrawlState() {
 
     if (res.CAST_crawlActive) {
       const status = res.CAST_crawlStatus || "Crawl in progress...";
-      statusEl.textContent = status;
-      statusEl.style.display = "block";
+      showStatus(status);
       
       // Also request current status from background for real-time updates
       chrome.runtime.sendMessage({ type: "get-crawl-status" }, (response) => {
         if (response && response.active) {
-          statusEl.textContent = response.status || status;
+          showStatus(response.status || status);
         } else if (response && response.manualMode) {
-          statusEl.textContent = "Manual Mode Active";
+          showStatus("Manual Mode Active");
           document.getElementById("startManual").textContent = "Stop Manual Mode";
         } else if (!response || !response.active) {
           // Crawl might have finished
-          statusEl.textContent = res.CAST_crawlStatus || "Crawl complete.";
+          showStatus(res.CAST_crawlStatus || "Crawl complete.");
         }
       });
     } else if (res.CAST_crawlStatus) {
       // Show last status even if crawl is not active
-      statusEl.textContent = res.CAST_crawlStatus;
-      statusEl.style.display = "block";
+      showStatus(res.CAST_crawlStatus);
     }
     
     if (res.CAST_crawlDepth !== undefined) {
@@ -115,8 +130,7 @@ function restoreCrawlState() {
 // Listen for status updates from background
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "crawl-status-update") {
-    statusEl.textContent = msg.status || "Crawling...";
-    statusEl.style.display = "block";
+    showStatus(msg.status || "Crawling...");
     // Update stored status
     chrome.storage.local.set({
       CAST_crawlStatus: msg.status,

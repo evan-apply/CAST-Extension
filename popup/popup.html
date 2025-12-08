@@ -236,10 +236,29 @@
         border-left: 3px solid #3498db;
         min-height: 0;
         display: none;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
       }
       
       #status:not(:empty) {
-        display: block;
+        display: flex;
+      }
+      
+      #statusText {
+        flex: 1;
+      }
+      
+      #statusClose {
+        background: transparent;
+        color: #475569;
+        border: none;
+        padding: 2px 6px;
+        width: auto;
+        box-shadow: none;
+        font-size: 14px;
+        line-height: 1;
+        cursor: pointer;
       }
       
       #reportBox {
@@ -395,7 +414,10 @@
         <div id="strategyList" style="max-height: 300px; overflow-y: auto;"></div>
       </div>
 
-      <div id="status"></div>
+      <div id="status">
+        <span id="statusText"></span>
+        <button id="statusClose" aria-label="Close status">✕</button>
+      </div>
       <div id="progressContainer" class="info-panel">
         <div class="info-header">
           <span id="progressStage">Data Stats</span>
