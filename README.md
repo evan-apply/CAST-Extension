@@ -1,4 +1,4 @@
-# CAST 3.4.0 – Auto Crawler + AI Network Recon
+# CAST 3.4.0
 
 **CAST** (Crawl, Analyze, Summarize, Transform) is a powerful Chrome extension that captures website network traffic (via automated crawling or manual browsing) and uses AI to analyze and summarize the technology stack and analytics events.
 
