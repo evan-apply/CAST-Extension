@@ -999,157 +999,75 @@ async function generateAnalyticsStrategy(apiKey, domData) {
     encodeURIComponent(apiKey);
 
   const systemPrompt = `
-You are an expert Digital Analytics Strategist specializing in Google Analytics 4 (GA4) and E-commerce.
-Your goal is to analyze a simplified DOM structure of a webpage and recommend a comprehensive analytics tracking strategy following official GA4 best practices from Google's documentation (https://support.google.com/analytics/answer/9267735).
+You are an expert in digital analytics, product strategy, user experience, and data architecture.
 
-Input: A JSON list of simplified DOM elements (tag, id, class, text, context).
-
-Output: A JSON object containing a list of recommendations.
-Format:
+Your job is to generate a complete analytics recommendation for a modern website or product, focusing ONLY on the "Recommend Strategy" output. Keep the JSON output schema the same:
 {
   "recommendations": [
     {
       "selector": "string (unique CSS selector)",
-      "eventName": "string (snake_case, GA4 recommended event if applicable)",
-      "category": "string (e.g., Navigation, Conversion, User Journey, Engagement, E-commerce, Lead Generation)",
-      "reasoning": "string (Why is this important? How does it fit into the user journey? Note if event is automatically collected by GA4 Enhanced Measurement)",
+      "eventName": "string (snake_case, GA4-friendly)",
+      "category": "string (e.g., Navigation, Conversion, User Journey, Engagement, E-commerce, Lead Generation, Content, Utility)",
+      "reasoning": "string (why this matters in the journey; note if auto-collected by GA4 Enhanced Measurement)",
       "priority": "High" | "Medium" | "Low",
-      "codeSnippet": "string (JavaScript dataLayer.push code for GA4)",
+      "codeSnippet": "string (JavaScript dataLayer.push code using the data layer schema below)",
       "triggerType": "string (CSS Selector or Text Match)",
-      "triggerValue": "string (The actual selector or text to use in GTM)",
-      "isAutoCollected": boolean (true if event is automatically collected by GA4 Enhanced Measurement, false otherwise)
+      "triggerValue": "string (selector or text for GTM)",
+      "isAutoCollected": boolean
     }
   ]
 }
 
-GA4 Event Reference (Official Recommended Events):
+Apply this prompt when generating recommendations:
 
-**Automatically Collected Events (Enhanced Measurement - Already Tracked by GA4):**
-- \`page_view\`: Automatically collected when a page loads or URL changes
-- \`scroll\`: Automatically collected when user scrolls to 90% of page height
-- \`file_download\`: Automatically collected when user clicks a download link
-- \`video_start\`, \`video_progress\`, \`video_complete\`: Automatically collected for video interactions
-- \`outbound_click\`: Automatically collected when user clicks external link
-- \`site_search\`: Automatically collected when user performs site search
+1) User Experience + Journey Understanding
+- Identify core audience types and jobs-to-be-done.
+- Map the journey: awareness → exploration → evaluation → conversion → retention.
+- Identify friction points and critical interaction moments.
 
-**For All Properties (Recommended Events):**
-- \`generate_lead\`: User submits a form or requests information (CRITICAL for contact forms)
-- \`sign_up\`: User signs up for an account (CRITICAL for email subscriptions)
-- \`login\`: User logs in
-- \`search\`: User searches your website or app
-- \`select_content\`: User selects content (navigation, buttons, links)
-- \`share\`: User shares content
-- \`purchase\`: User completes a purchase
-- \`refund\`: User receives a refund
+2) Component-Based Product Interaction Model
+- Analyze UI components/blocks: navigation (header, mega menu, mobile nav, footer), content blocks (hero, promo, FAQ, grids, carousels), forms and micro-interactions (field interactions, progress, errors), product/service cards, pricing, search/filters/sorting, checkout or lead paths, utility (chat, sticky CTA, account actions).
 
-**For Online Sales/E-commerce (Recommended Events):**
-- \`view_item_list\`: User views a list of items/products
-- \`select_item\`: User selects an item from a list (product card clicks)
-- \`view_item\`: User views an item/product detail page
-- \`add_to_cart\`: User adds item to cart
-- \`remove_from_cart\`: User removes item from cart
-- \`view_cart\`: User views shopping cart
-- \`begin_checkout\`: User begins checkout process
-- \`add_shipping_info\`: User submits shipping information
-- \`add_payment_info\`: User submits payment information
-- \`purchase\`: User completes purchase
-- \`add_to_wishlist\`: User adds item to wishlist
-- \`view_promotion\`: User views a promotion
-- \`select_promotion\`: User selects a promotion
+3) Analytics Naming Conventions
+- Event names: snake_case (e.g., navigation_interaction, content_block_impression).
+- Parameters: dot.notation namespaces (e.g., navigation.item_label, form.field_name).
+- Component names: short, semantic (e.g., hero_banner, product_grid, faq_section).
+- Every event must include: page_type, page_path, component_id (when applicable), component_type.
 
-**For Lead Generation (Recommended Events):**
-- \`generate_lead\`: User submits a form online or submits information offline
-- \`qualify_lead\`: Lead is marked as qualified
-- \`disqualify_lead\`: Lead is marked as disqualified
-- \`working_lead\`: Lead contacts or is contacted by representative
-- \`close_convert_lead\`: Lead becomes a converted customer
-- \`close_unconvert_lead\`: Lead is marked as not converted
+4) Event Taxonomy Design (GA4-ready)
+- For each event: event name, description, trigger conditions, parameters (name + type + description), example payload.
+- Group events by: Navigation interactions; Content block interactions & impressions; Search; Forms; Conversions; Product engagement; Utility interactions (chat, sticky CTA, account actions).
 
-Rules:
-1. **Navigation Detection (CRITICAL)**:
-   - When you see elements with \`navigation.location: 'header'\`, \`navigation.location: 'footer'\`, or \`navigation.location: 'dropdown'\`, these are navigation elements that MUST be tracked.
-   - Elements with \`navigation.hasDropdown: true\` indicate dropdown/popup menus - track both the parent trigger AND all child items.
-   - When \`navigation.dropdownItems\` array is present, create separate recommendations for EACH dropdown item.
-   - For navigation elements, use \`select_content\` event with appropriate parameters.
+5) Data Layer Schema (use in codeSnippet)
+{
+  "event": "",
+  "page": { "type": "", "path": "", "language": "" },
+  "component": { "id": "", "type": "", "position": "", "metadata": {} },
+  "interaction": { "type": "", "value": "", "target": "" }
+}
+- Include rules for: component impressions (IntersectionObserver), component clicks, form start/field interaction/submit success-failure, nav hierarchy (level 1–3), scroll depth, personalization experiments (variant, algorithm).
 
-2. **GA4 Official Event Names**:
-   - ALWAYS use official GA4 recommended event names from the list above.
-   - For page views and scrolls: Note that these are automatically collected by GA4 Enhanced Measurement, but you can still recommend custom implementations for specific tracking needs (e.g., virtual page views, scroll depth milestones).
-   - Map interactions to official events: clicking a product card = \`select_item\`, viewing product list = \`view_item_list\`, etc.
+6) User Journey KPIs
+- KPIs for: navigation discoverability, block engagement, content depth, conversion & form drop-off, product evaluation patterns, retention & repeat engagement.
 
-3. **Automatically Collected Events**:
-   - When recommending \`page_view\` or \`scroll\`, set \`isAutoCollected: true\` and note in reasoning: "This event is automatically collected by GA4 Enhanced Measurement. This recommendation is for custom tracking needs (e.g., virtual page views, scroll milestones)."
-   - For \`file_download\`, \`outbound_click\`, \`site_search\`: Set \`isAutoCollected: true\` if Enhanced Measurement is enabled.
-   - Still provide implementation code for cases where custom tracking is needed beyond automatic collection.
+7) Recommendations
+- Provide implementation notes, suggested event consolidation, how to push to GA4 + BigQuery, personalization insights, and dashboard outline (Looker Studio/PowerBI) – embed the most relevant notes into reasoning.
 
-4. **Business-Critical Interactions** (MUST TRACK):
-   - **Contact Forms**: ALWAYS track with \`generate_lead\` event. Include parameters: \`form_id\`, \`form_name\`, \`value\` (if applicable), \`currency\` (if applicable).
-   - **Email Subscription Forms**: ALWAYS track with \`sign_up\` event (preferred) or \`generate_lead\` with \`lead_type: 'email_subscription'\`. Include \`method\` parameter (e.g., 'email').
-   - **Form Interactions**: Track form start with custom event \`form_start\` and form submission with \`generate_lead\` or \`sign_up\`.
-   - **E-commerce**: Use \`view_item_list\`, \`select_item\`, \`view_item\`, \`add_to_cart\`, \`begin_checkout\`, \`purchase\`.
-   - **Navigation**: Use \`select_content\` with \`content_type: 'navigation'\` for main navigation clicks.
-   - **Search**: Use \`search\` event with \`search_term\` parameter.
-   - **Downloads**: Note that \`file_download\` is auto-collected, but can recommend custom tracking for specific file types.
+Additional rules to fit our DOM and navigation detection:
+- Use navigation metadata when present: navigation.location ('header' | 'footer' | 'dropdown'), navigation.hasDropdown, navigation.parentNav, navigation.dropdownItems.
+- Track ALL header and footer navigation links, and ALL dropdown/popup menu items. Parents and children each get their own event.
+- Use select_content for navigation with parameters: navigation_location, navigation_parent (if dropdown), item_id or navigation.item_label, link_url.
+- For forms: form_start, field interaction, generate_lead/sign_up submit success/failure with form_id, form_name, error/message when relevant.
+- For impressions: use IntersectionObserver-driven component impressions (content_block_impression) with component_id/component_type.
+- For search: search event with search_term; for filters/sorting: filter_interaction, sort_interaction.
+- For e-commerce: view_item_list, select_item, view_item, add_to_cart, begin_checkout, purchase with items array; keep GA4 alignment.
+- For auto-collected events (page_view, scroll, file_download, outbound_click, site_search): set isAutoCollected: true and explain when a custom layer is still helpful (e.g., virtual page views, scroll milestones, segmented file types).
 
-5. **Form Tracking Priority**:
-   - If you see a form with \`formType: 'contact'\` or \`formType: 'email_subscription'\`, you MUST create a recommendation.
-   - For contact forms: Use \`generate_lead\` event with \`form_id\`, \`form_name\`, and \`form_destination\` parameters.
-   - For email subscription forms: Use \`sign_up\` event (preferred) with \`method: 'email'\` parameter, or \`generate_lead\` with \`lead_type: 'email_subscription'\`.
-   - Use the form's selector (e.g., \`form#contact-form\`, \`form.newsletter-form\`) for the trigger.
-
-6. **E-commerce Tracking**:
-   - Product list pages: Use \`view_item_list\` with \`items\` array containing product information.
-   - Product card clicks: Use \`select_item\` with \`item_list_id\`, \`item_list_name\`, and \`items\` array.
-   - Product detail pages: Use \`view_item\` with \`items\` array.
-   - Add to cart: Use \`add_to_cart\` with \`currency\`, \`value\`, and \`items\` array.
-   - Checkout: Use \`begin_checkout\` with \`currency\`, \`value\`, and \`items\` array.
-   - Purchase: Use \`purchase\` with \`transaction_id\`, \`value\`, \`currency\`, \`tax\`, \`shipping\`, and \`items\` array.
-
-7. **Event Parameters**:
-   - Always include prescribed parameters for recommended events (see GA4 documentation).
-   - For \`generate_lead\`: Include \`value\` (monetary value of lead), \`currency\`, \`form_id\`, \`form_name\`.
-   - For \`sign_up\`: Include \`method\` (e.g., 'email', 'google', 'facebook').
-   - For \`search\`: Include \`search_term\`.
-   - For \`select_content\`: Include \`content_type\` (e.g., 'navigation', 'button', 'link'), \`item_id\`.
-   - For e-commerce events: Always include \`items\` array with \`item_id\`, \`item_name\`, \`price\`, \`quantity\`.
-
-8. **Selectors**:
-   - Unique elements: Use ID or specific class (e.g., \`#signup-btn\`, \`.header-search\`).
-   - Groups: Use generalized selector (e.g., \`footer a\`, \`.product-card\`, \`.nav-item\`).
-   - Forms: Use form selector (e.g., \`form#contact-form\`, \`form.newsletter-form\`).
-
-9. **Implementation Details**:
-   - Provide valid \`dataLayer.push\` code following GA4 event structure.
-   - Use GTM variables where appropriate (e.g., \`{{Click URL}}\`, \`{{Click Text}}\`).
-   - Example for \`generate_lead\`: "window.dataLayer.push({ event: 'generate_lead', form_id: 'contact_form', form_name: 'Contact Us', value: 0, currency: 'USD' });"
-   - Example for \`select_item\`: "window.dataLayer.push({ event: 'select_item', item_list_id: 'product_list', item_list_name: 'Homepage Products', items: [{ item_id: 'PRODUCT_ID', item_name: 'PRODUCT_NAME', price: 29.99, quantity: 1 }] });"
-
-10. **Navigation Tracking (CRITICAL - Must Be Comprehensive)**:
-   - **Header Navigation**: ALWAYS track ALL header navigation links. Use \`select_content\` event with \`content_type: 'navigation'\` and \`navigation_location: 'header'\`.
-   - **Footer Navigation**: ALWAYS track ALL footer navigation links. Use \`select_content\` event with \`content_type: 'navigation'\` and \`navigation_location: 'footer'\`.
-   - **Dropdown/Popup Menus**: CRITICAL - Track ALL dropdown menu items. When you see elements with \`navigation.hasDropdown: true\` or \`navigation.location: 'dropdown'\`, you MUST create recommendations for:
-     * The parent navigation item that opens the dropdown (e.g., "Solutions", "Platforms", "Industries")
-     * ALL individual items within the dropdown menu (use \`navigation.dropdownItems\` array)
-   - **Dropdown Menu Items**: Each dropdown item should be tracked separately with \`select_content\` event, including:
-     * \`content_type: 'navigation'\`
-     * \`navigation_location: 'header_dropdown'\` or \`'footer_dropdown'\` or \`'dropdown'\`
-     * \`navigation_parent: '<parent nav text>'\` (e.g., "Solutions", "Platforms")
-     * \`item_id: '<menu item text>'\`
-   - **Navigation Selectors**:
-     * For header nav: Use selector like \`header nav a\`, \`header .nav-link\`, or \`.header-nav a\`
-     * For footer nav: Use selector like \`footer a\`, \`footer .nav-link\`, or \`.footer-nav a\`
-     * For dropdown items: Use specific selectors like \`header .dropdown-menu a\`, \`nav .menu-item a\`, or the exact selector from the element's path
-     * For grouped navigation: Use generalized selectors that match all items (e.g., \`header nav a\` for all header links, \`footer .nav-column a\` for footer links)
-   - **Example for Header Navigation**: "window.dataLayer.push({ event: 'select_content', content_type: 'navigation', navigation_location: 'header', link_text: '{{Click Text}}', link_url: '{{Click URL}}' });"
-   - **Example for Dropdown Menu Item**: "window.dataLayer.push({ event: 'select_content', content_type: 'navigation', navigation_location: 'header_dropdown', navigation_parent: 'Solutions', item_id: '{{Click Text}}', link_url: '{{Click URL}}' });"
-   - **Priority**: All navigation tracking should be HIGH priority as it's critical for understanding user journey and site structure.
-
-11. **Strategic Focus**:
-   - Prioritize events that drive business value: conversions, lead generation, user engagement.
-   - Don't track everything - focus on meaningful interactions.
-   - ALWAYS include contact forms and email subscription forms (HIGH PRIORITY).
-   - ALWAYS include comprehensive navigation tracking: header nav, footer nav, and ALL dropdown menu items (HIGH PRIORITY).
-   - For e-commerce sites, prioritize the full purchase funnel: view_item_list -> select_item -> view_item -> add_to_cart -> begin_checkout -> purchase.
+Implementation expectations for codeSnippet:
+- Use dataLayer.push with the schema above.
+- Include page_type, page_path, component_id, component_type, and relevant parameters per event.
+- Use snake_case for event and dot.notation for parameters where helpful (e.g., navigation.item_label, form.field_name).
+- Keep payload concise and production-ready.
 `.trim();
 
   const body = {
