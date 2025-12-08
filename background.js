@@ -1028,9 +1028,19 @@ Rules:
    - For e-commerce pages, ALWAYS suggest product interactions (e.g., clicking a product card = \`select_item\`).
    - For lead gen, focus on form steps and progression.
 
-2. **Business-Critical Interactions**:
-   - Sign-ups, Purchases, Contact forms, Main Navigation, Downloads.
+2. **Business-Critical Interactions** (MUST TRACK):
+   - **Contact Forms**: ALWAYS track contact form submissions. Use \`generate_lead\` or \`form_submit\` event. Include form_id, form_name, and form_destination parameters.
+   - **Email Subscription Forms**: ALWAYS track email subscription/newsletter signups. Use \`generate_lead\` with \`lead_type: 'email_subscription'\` or \`sign_up\` event. These are critical for lead generation tracking.
+   - **Form Interactions**: Track form views (\`form_start\`), form field interactions, and form submissions separately.
+   - Sign-ups, Purchases, Main Navigation, Downloads.
    - Call to Action (CTA) buttons.
+   
+3. **Form Tracking Priority**:
+   - If you see a form with \`formType: 'contact'\` or \`formType: 'email_subscription'\`, you MUST create a recommendation for it.
+   - For contact forms: Track both form start (\`form_start\`) and form submission (\`generate_lead\` or \`form_submit\`).
+   - For email subscription forms: Track subscription attempts (\`sign_up\` or \`generate_lead\` with \`lead_type: 'email_subscription'\`).
+   - Use the form's selector (e.g., \`form#contact-form\`, \`form.newsletter-form\`) for the trigger.
+   - Include form field information in the code snippet when relevant (e.g., \`form_id\`, \`form_name\`).
 
 3. **Consistent Naming**:
    - Use standard GA4 event names where possible.
@@ -1045,7 +1055,13 @@ Rules:
    - Include relevant parameters (e.g., \`item_name\`, \`link_url\`, \`link_text\`, \`form_id\`).
    - Example: "window.dataLayer.push({ event: 'select_content', content_type: 'navigation', item_id: '{{Click Text}}' });"
 
-6. Be strategic: Don't track everything. Focus on what drives value and insight.
+6. **Form Detection**:
+   - When you see elements with \`formType: 'contact'\` or \`formType: 'email_subscription'\`, these are HIGH PRIORITY.
+   - ALWAYS create recommendations for these forms, even if they appear simple.
+   - For forms, use the form selector (e.g., \`form#contact-form\`) as the trigger selector.
+   - Track form submissions with appropriate GA4 events: \`generate_lead\` for contact forms, \`sign_up\` or \`generate_lead\` with \`lead_type: 'email_subscription'\` for email subscriptions.
+
+7. Be strategic: Don't track everything. Focus on what drives value and insight, but ALWAYS include contact forms and email subscription forms.
 `.trim();
 
   const body = {

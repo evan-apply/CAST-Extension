@@ -674,6 +674,49 @@
     
     const elements = [];
     
+    // Helper to detect form type
+    function detectFormType(form) {
+      if (!form || form.tagName !== 'FORM') return null;
+      
+      const formId = (form.id || '').toLowerCase();
+      const formClass = (form.className || '').toLowerCase();
+      const formAction = (form.action || '').toLowerCase();
+      const formName = (form.name || '').toLowerCase();
+      
+      // Check for email subscription/newsletter forms
+      if (formId.includes('newsletter') || formId.includes('subscribe') || formId.includes('signup') ||
+          formClass.includes('newsletter') || formClass.includes('subscribe') || formClass.includes('signup') ||
+          formName.includes('newsletter') || formName.includes('subscribe') || formName.includes('signup')) {
+        return 'email_subscription';
+      }
+      
+      // Check for contact forms
+      if (formId.includes('contact') || formClass.includes('contact') || formName.includes('contact') ||
+          formAction.includes('contact')) {
+        return 'contact';
+      }
+      
+      // Check for email input presence
+      const emailInput = form.querySelector('input[type="email"], input[name*="email" i], input[id*="email" i]');
+      if (emailInput) {
+        // Check if it's likely a subscription form
+        const formText = (form.textContent || '').toLowerCase();
+        if (formText.includes('subscribe') || formText.includes('newsletter') || formText.includes('sign up') ||
+            formText.includes('email updates')) {
+          return 'email_subscription';
+        }
+      }
+      
+      // Check for contact-related fields
+      const hasName = form.querySelector('input[name*="name" i], input[id*="name" i]');
+      const hasMessage = form.querySelector('textarea[name*="message" i], textarea[id*="message" i], textarea[name*="comment" i]');
+      if (hasName && hasMessage) {
+        return 'contact';
+      }
+      
+      return 'form'; // Generic form
+    }
+    
     function processNode(node, context = 'body') {
       if (node.nodeType !== Node.ELEMENT_NODE) return;
       
@@ -685,11 +728,58 @@
         currentContext = tagName.toLowerCase();
       }
       
+      // Special handling for forms - capture form with its type
+      if (tagName === 'FORM') {
+        const formType = detectFormType(node);
+        const formFields = [];
+        
+        // Capture key form fields
+        const inputs = node.querySelectorAll('input, textarea, select');
+        inputs.forEach(input => {
+          const inputType = input.type || 'text';
+          const inputName = input.name || input.id || '';
+          const inputPlaceholder = input.placeholder || '';
+          formFields.push({
+            type: inputType,
+            name: inputName,
+            placeholder: inputPlaceholder
+          });
+        });
+        
+        // Find submit button
+        const submitBtn = node.querySelector('button[type="submit"], input[type="submit"], button:not([type])');
+        const submitText = submitBtn ? (submitBtn.textContent || submitBtn.value || '').trim() : '';
+        
+        // Generate selector for the form
+        let selector = 'form';
+        if (node.id) selector += `#${node.id}`;
+        else if (node.className && typeof node.className === 'string') {
+          const classes = node.className.trim().split(/\s+/).filter(c => c && !c.startsWith('cast-'));
+          if (classes.length) selector += `.${classes.slice(0, 2).join('.')}`;
+        }
+        
+        elements.push({
+          tag: 'form',
+          id: node.id || null,
+          class: node.className && typeof node.className === 'string' ? node.className : null,
+          text: (node.textContent || '').slice(0, 100).replace(/\s+/g, ' ').trim(),
+          action: node.action || null,
+          formType: formType,
+          formFields: formFields.slice(0, 10), // Limit fields
+          submitButtonText: submitText,
+          context: currentContext,
+          path: getCssPath(node)
+        });
+      }
+      
       // Check if it's an element of interest
       if (interactiveTags.includes(tagName) || 
           (semanticTags.includes(tagName)) ||
           node.onclick || 
           node.getAttribute('role') === 'button') {
+        
+        // For form inputs, still capture them individually (especially email inputs for subscription detection)
+        // The form itself is captured separately with formType
             
         // Generate a selector (simplified)
         let selector = tagName.toLowerCase();
@@ -700,13 +790,10 @@
            if (classes.length) selector += `.${classes.slice(0, 2).join('.')}`;
         }
         
-        // Add path for uniqueness if needed, but keep it short
-        // For AI, identifying "the button in the header" is key.
-        
         // Capture text content (truncated)
         let text = '';
         if (tagName === 'INPUT') {
-            text = node.placeholder || node.name || '';
+            text = node.placeholder || node.name || node.value || '';
         } else {
             text = (node.innerText || '').slice(0, 50).replace(/\s+/g, ' ').trim();
         }
@@ -719,9 +806,6 @@
           href: node.href || null,
           action: node.action || null, // for forms
           context: currentContext,
-          // Generate a unique-ish path for highlighting later
-          // We'll use a custom data attribute temporarily or just rely on CSS path
-          // Let's try to generate a CSS path
           path: getCssPath(node)
         });
       }
