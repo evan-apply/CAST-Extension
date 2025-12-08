@@ -1146,6 +1146,7 @@ Additional rules to fit our DOM and navigation detection:
 - For e-commerce: view_item_list, select_item, view_item, add_to_cart, begin_checkout, purchase with items array; keep GA4 alignment.
 - For auto-collected events (page_view, scroll, file_download, outbound_click, site_search): set isAutoCollected: true and explain when a custom layer is still helpful (e.g., virtual page views, scroll milestones, segmented file types).
 - ALWAYS include the core GA4 Enhanced Measurement autos as individual recommendations (one per event, NOT grouped), each marked isAutoCollected: true: page_view, scroll, outbound_click, file_download, site_search, video_start, video_progress, video_complete. Treat them like other events: one per line with its own selector/trigger and reasoning. Make clear these fire when the GA4 base tag is present; include a short codeSnippet showing how to extend/segment if needed (e.g., virtual page views, scroll depth thresholds, file type filtering).
+- Consolidate redundant interactions: do NOT emit multiple near-duplicate events for the same UI component. Group cookie/consent banners into a single event (e.g., consent_interaction) with parameters: consent_action (accept/reject/preferences), consent_provider, consent_area (banner/modal), and link_text if applicable. Prefer GA4-aligned parameter naming (snake_case) even if event is custom.
 
 Implementation expectations for codeSnippet:
 - Use dataLayer.push with the schema above.
