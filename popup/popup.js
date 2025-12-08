@@ -384,7 +384,12 @@ document.getElementById("recommendStrategy").onclick = () => {
       badge.style.color = rec.priority === "High" ? "#991b1b" : "#075985";
       badge.textContent = rec.category;
 
-      // Auto-collected indicator
+      const badgesContainer = document.createElement("div");
+      badgesContainer.style.display = "flex";
+      badgesContainer.style.gap = "4px";
+      badgesContainer.style.alignItems = "center";
+
+      // Auto-collected indicator (placed before category badge)
       if (rec.isAutoCollected) {
         const autoBadge = document.createElement("span");
         autoBadge.style.fontSize = "9px";
@@ -392,14 +397,15 @@ document.getElementById("recommendStrategy").onclick = () => {
         autoBadge.style.borderRadius = "4px";
         autoBadge.style.backgroundColor = "#dcfce7";
         autoBadge.style.color = "#166534";
-        autoBadge.style.marginLeft = "4px";
         autoBadge.textContent = "Auto";
         autoBadge.title = "This event is automatically collected by GA4 Enhanced Measurement";
-        header.appendChild(autoBadge);
+        badgesContainer.appendChild(autoBadge);
       }
 
+      badgesContainer.appendChild(badge);
+
       header.appendChild(title);
-      header.appendChild(badge);
+      header.appendChild(badgesContainer);
 
       // Append header to item first!
       item.appendChild(header);
