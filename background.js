@@ -17,6 +17,16 @@ let pageTimeout = null; // Timeout for page loading
 const PAGE_LOAD_TIMEOUT = 15000; // 15 seconds max per page
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Promise timeout helper to avoid indefinite hangs
+function withTimeout(promise, ms, label = "Timeout") {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} after ${ms}ms`)), ms)
+    )
+  ]);
+}
+
 // IndexedDB for network calls persistence and AI results
 let networkCallsDB = null;
 const NETWORK_CALLS_DB_NAME = 'CAST_NetworkCalls_DB';
@@ -860,8 +870,28 @@ async function processBatchesDirect(apiKey, networkCalls, sessionId, progressCal
          payload = trimPayloadToLimit(payload, 200000); // Trim to very small size (50k tokens approx)
       }
 
-      // Call Gemini
-      const result = await callGemini(apiKey, payload);
+      // Call Gemini with timeout safeguard to avoid hangs
+      let result;
+      try {
+        result = await withTimeout(
+          callGemini(apiKey, payload),
+          60000,
+          `Gemini batch ${i + 1} timeout`
+        );
+      } catch (err) {
+        console.error(`CAST: Batch ${i + 1} timed out or failed:`, err);
+        if (progressCallback) {
+          progressCallback({
+            processed: i + 1,
+            total: batches.length,
+            percentage: Math.round(((i + 1) / batches.length) * 100),
+            current: `Batch ${i + 1}/${batches.length} skipped (timeout)`,
+            stage: 'AI Analysis'
+          });
+        }
+        processedBatches = i + 1;
+        continue; // Skip to next batch on timeout/error
+      }
       
       // Store results
       if (result.tech_stack && result.analytics_events) {
