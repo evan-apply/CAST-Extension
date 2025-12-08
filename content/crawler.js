@@ -674,6 +674,84 @@
     
     const elements = [];
     
+    // Helper to detect navigation structure and dropdown menus
+    function detectNavigationStructure(node) {
+      const navInfo = {
+        isNavigation: false,
+        location: null, // 'header', 'footer', 'nav', 'dropdown', 'menu'
+        parentNav: null,
+        hasDropdown: false,
+        dropdownItems: []
+      };
+      
+      // Check if node is in header
+      const header = node.closest('header, [role="banner"], .header, #header, [class*="header" i]');
+      if (header) {
+        navInfo.isNavigation = true;
+        navInfo.location = 'header';
+      }
+      
+      // Check if node is in footer
+      const footer = node.closest('footer, [role="contentinfo"], .footer, #footer, [class*="footer" i]');
+      if (footer) {
+        navInfo.isNavigation = true;
+        navInfo.location = 'footer';
+      }
+      
+      // Check if node is in nav element
+      const nav = node.closest('nav, [role="navigation"], .nav, .navigation, [class*="nav" i], [class*="navigation" i]');
+      if (nav && !header && !footer) {
+        navInfo.isNavigation = true;
+        navInfo.location = 'nav';
+      }
+      
+      // Check if node is in a dropdown/menu structure
+      const dropdown = node.closest('[role="menu"], [role="menubar"], .dropdown, .menu, [class*="dropdown" i], [class*="menu" i], [aria-expanded="true"], [aria-haspopup="true"]');
+      if (dropdown) {
+        navInfo.isNavigation = true;
+        navInfo.hasDropdown = true;
+        if (!navInfo.location) navInfo.location = 'dropdown';
+        
+        // Find parent nav item that triggers this dropdown
+        const parentNav = dropdown.closest('li, .nav-item, [class*="nav-item" i]');
+        if (parentNav) {
+          const parentLink = parentNav.querySelector('a, button');
+          if (parentLink) {
+            navInfo.parentNav = {
+              text: (parentLink.textContent || '').trim().slice(0, 50),
+              href: parentLink.href || null
+            };
+          }
+        }
+        
+        // Collect dropdown menu items
+        const menuItems = dropdown.querySelectorAll('a, button, [role="menuitem"]');
+        navInfo.dropdownItems = Array.from(menuItems).slice(0, 20).map(item => ({
+          text: (item.textContent || '').trim().slice(0, 50),
+          href: item.href || null,
+          tag: item.tagName.toLowerCase()
+        }));
+      }
+      
+      // Check if node itself is a navigation link/button
+      if (node.tagName === 'A' || node.tagName === 'BUTTON') {
+        const parent = node.parentElement;
+        if (parent && (parent.tagName === 'NAV' || parent.tagName === 'LI' || 
+            parent.classList.toString().toLowerCase().includes('nav') ||
+            parent.classList.toString().toLowerCase().includes('menu'))) {
+          navInfo.isNavigation = true;
+          if (!navInfo.location) {
+            // Check parent context
+            if (header) navInfo.location = 'header';
+            else if (footer) navInfo.location = 'footer';
+            else navInfo.location = 'nav';
+          }
+        }
+      }
+      
+      return navInfo;
+    }
+    
     // Helper to detect form type
     function detectFormType(form) {
       if (!form || form.tagName !== 'FORM') return null;
@@ -778,6 +856,9 @@
           node.onclick || 
           node.getAttribute('role') === 'button') {
         
+        // Detect navigation structure
+        const navInfo = detectNavigationStructure(node);
+        
         // For form inputs, still capture them individually (especially email inputs for subscription detection)
         // The form itself is captured separately with formType
             
@@ -790,6 +871,28 @@
            if (classes.length) selector += `.${classes.slice(0, 2).join('.')}`;
         }
         
+        // For navigation items, try to create a more specific selector
+        if (navInfo.isNavigation && (tagName === 'A' || tagName === 'BUTTON')) {
+          // If it's in a list, include list context
+          const listItem = node.closest('li');
+          if (listItem) {
+            const list = listItem.closest('ul, ol, [role="menu"], [role="menubar"]');
+            if (list) {
+              // Create selector that includes list context
+              const listId = list.id;
+              const listClass = list.className && typeof list.className === 'string' 
+                ? list.className.trim().split(/\s+/).filter(c => c && !c.startsWith('cast-'))[0] 
+                : null;
+              
+              if (listId) {
+                selector = `${list.tagName.toLowerCase()}#${listId} ${selector}`;
+              } else if (listClass) {
+                selector = `${list.tagName.toLowerCase()}.${listClass} ${selector}`;
+              }
+            }
+          }
+        }
+        
         // Capture text content (truncated)
         let text = '';
         if (tagName === 'INPUT') {
@@ -798,7 +901,7 @@
             text = (node.innerText || '').slice(0, 50).replace(/\s+/g, ' ').trim();
         }
         
-        elements.push({
+        const elementData = {
           tag: tagName.toLowerCase(),
           id: node.id || null,
           class: node.className && typeof node.className === 'string' ? node.className : null,
@@ -807,7 +910,58 @@
           action: node.action || null, // for forms
           context: currentContext,
           path: getCssPath(node)
-        });
+        };
+        
+        // Add navigation information if applicable
+        if (navInfo.isNavigation) {
+          elementData.navigation = {
+            location: navInfo.location,
+            hasDropdown: navInfo.hasDropdown,
+            parentNav: navInfo.parentNav,
+            dropdownItems: navInfo.dropdownItems.length > 0 ? navInfo.dropdownItems : null
+          };
+        }
+        
+        elements.push(elementData);
+      }
+      
+      // Special handling: Capture dropdown menu containers even if they're not directly interactive
+      // This helps identify dropdown structures
+      if (tagName === 'UL' || tagName === 'OL' || tagName === 'DIV') {
+        const navInfo = detectNavigationStructure(node);
+        if (navInfo.hasDropdown || (navInfo.isNavigation && navInfo.location === 'dropdown')) {
+          // Capture the dropdown container
+          const dropdownLinks = node.querySelectorAll('a, button, [role="menuitem"]');
+          if (dropdownLinks.length > 0) {
+            const dropdownItems = Array.from(dropdownLinks).slice(0, 20).map(item => ({
+              text: (item.textContent || '').trim().slice(0, 50),
+              href: item.href || null,
+              tag: item.tagName.toLowerCase()
+            }));
+            
+            let selector = tagName.toLowerCase();
+            if (node.id) selector += `#${node.id}`;
+            else if (node.className && typeof node.className === 'string') {
+              const classes = node.className.trim().split(/\s+/).filter(c => c && !c.startsWith('cast-'));
+              if (classes.length) selector += `.${classes.slice(0, 2).join('.')}`;
+            }
+            
+            elements.push({
+              tag: 'dropdown_menu',
+              id: node.id || null,
+              class: node.className && typeof node.className === 'string' ? node.className : null,
+              text: `Dropdown menu with ${dropdownItems.length} items`,
+              context: currentContext,
+              path: getCssPath(node),
+              navigation: {
+                location: navInfo.location || 'dropdown',
+                hasDropdown: true,
+                parentNav: navInfo.parentNav,
+                dropdownItems: dropdownItems
+              }
+            });
+          }
+        }
       }
       
       // Recurse
