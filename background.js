@@ -20,7 +20,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // IndexedDB for network calls persistence and AI results
 let networkCallsDB = null;
 const NETWORK_CALLS_DB_NAME = 'CAST_NetworkCalls_DB';
-const NETWORK_CALLS_DB_VERSION = 2; // Increment version to add new tables
+const NETWORK_CALLS_DB_VERSION = 3; // Increment version to add new tables
 
 // Normalize URL to remove fragments and normalize query params for deduplication
 function normalizeUrl(url) {
@@ -130,6 +130,16 @@ async function initNetworkCallsDB() {
           analyticsStore.createIndex('sessionId', 'sessionId', { unique: false });
           analyticsStore.createIndex('batchId', 'batchId', { unique: false });
           analyticsStore.createIndex('timestamp', 'timestamp', { unique: false });
+        }
+      }
+
+      // Create Unique URLs table (version 3+)
+      if (oldVersion < 3) {
+        if (!db.objectStoreNames.contains('uniqueUrls')) {
+          const urlStore = db.createObjectStore('uniqueUrls', { keyPath: 'id', autoIncrement: true });
+          urlStore.createIndex('sessionId', 'sessionId', { unique: false });
+          urlStore.createIndex('sessionUrl', ['sessionId', 'url'], { unique: true });
+          urlStore.createIndex('timestamp', 'timestamp', { unique: false });
         }
       }
     };
@@ -341,6 +351,35 @@ async function clearStoreEntriesForSession(storeName, sessionId) {
     };
     request.onerror = () => reject(request.error);
   });
+}
+
+// Save a unique URL for the session (deduped by session + url)
+async function saveUniqueUrlToDB(sessionId, url, source = 'discovered') {
+  if (!sessionId || !url) return;
+  try {
+    if (!networkCallsDB) {
+      await initNetworkCallsDB();
+    }
+    if (!networkCallsDB.objectStoreNames.contains('uniqueUrls')) return;
+
+    const transaction = networkCallsDB.transaction(['uniqueUrls'], 'readwrite');
+    const store = transaction.objectStore('uniqueUrls');
+    const record = {
+      sessionId,
+      url,
+      source,
+      timestamp: Date.now()
+    };
+    const request = store.add(record);
+    request.onerror = (event) => {
+      // Ignore duplicate errors
+      if (event?.target?.error?.name !== 'ConstraintError') {
+        console.warn('CAST: uniqueUrls add error:', event?.target?.error);
+      }
+    };
+  } catch (error) {
+    console.warn('CAST: Failed to save unique URL:', error);
+  }
 }
 
 async function addEntriesToStore(storeName, entries) {
@@ -1786,6 +1825,7 @@ async function startCrawl() {
       if (oldSessionId && oldSessionId !== currentSessionId) {
         try {
           await clearNetworkCallsForSession(oldSessionId);
+          await clearStoreEntriesForSession('uniqueUrls', oldSessionId);
         } catch (error) {
           console.warn('Failed to clear old session data:', error);
         }
@@ -1793,6 +1833,13 @@ async function startCrawl() {
       
       // Store new session ID for persistence across reloads
       chrome.storage.local.set({ CAST_currentSessionId: currentSessionId });
+
+      // Save seed URL to uniqueUrls store
+      try {
+        await saveUniqueUrlToDB(currentSessionId, seedUrl, 'seed');
+      } catch (e) {
+        console.warn('CAST: Failed to save seed URL:', e);
+      }
       
       // Store crawl state for popup persistence
       chrome.storage.local.set({
@@ -2161,6 +2208,8 @@ function handlePageScanned(msg) {
           if (!allDiscoveredLinks.has(normalized) && !visited.has(normalized)) {
             allDiscoveredLinks.add(normalized);
             newLinks.push({ url: u.href, depth: depth + 1 });
+            // Persist unique URL
+            saveUniqueUrlToDB(currentSessionId, normalized, 'discovered').catch(() => {});
           }
         }
       } catch (e) {
