@@ -423,6 +423,18 @@ async function getDatabaseStats(sessionId) {
   }
 }
 
+async function getUniqueUrlsForSession(sessionId, limit) {
+  if (!sessionId) return [];
+  await initNetworkCallsDB();
+  if (!networkCallsDB.objectStoreNames.contains('uniqueUrls')) return [];
+  const records = await fetchStoreRecords('uniqueUrls', sessionId);
+  records.sort((a, b) => (a.id || 0) - (b.id || 0));
+  if (typeof limit === 'number' && limit > 0) {
+    return records.slice(0, limit);
+  }
+  return records;
+}
+
 async function getActiveSessionId() {
   return new Promise((resolve) => {
     chrome.storage.local.get(["CAST_currentSessionId"], (res) => {
@@ -772,6 +784,36 @@ function trimPayloadToLimit(payload, maxTokens) {
   return trimmedPayload;
 }
 
+// Wait for tab to finish loading the target URL
+function waitForTabComplete(tabId, targetUrl, timeoutMs = 20000) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const normalizedTarget = targetUrl ? normalizeUrl(targetUrl) : null;
+
+    function cleanup() {
+      chrome.tabs.onUpdated.removeListener(listener);
+    }
+
+    function listener(updatedTabId, changeInfo, tab) {
+      if (updatedTabId !== tabId) return;
+      if (changeInfo.status === "complete") {
+        if (normalizedTarget) {
+          const current = normalizeUrl(tab.url || "");
+          if (current !== normalizedTarget) return;
+        }
+        cleanup();
+        resolve(true);
+      }
+    }
+
+    chrome.tabs.onUpdated.addListener(listener);
+    setTimeout(() => {
+      cleanup();
+      resolve(false);
+    }, timeoutMs);
+  });
+}
+
 // Use Offscreen API or simplified keep-alive interval to prevent SW termination
 // In MV3, Offscreen API is the official way, but for now we can use a "pinger" via the content script
 // or just rely on the open messaging channel.
@@ -779,6 +821,8 @@ function trimPayloadToLimit(payload, maxTokens) {
 // Simple self-ping to keep alive during analysis
 let keepAliveInterval;
 let aiCancelRequested = false;
+let autoStrategyCancelRequested = false;
+let autopilotCancelRequested = false;
 function startKeepAlive() {
   if (keepAliveInterval) clearInterval(keepAliveInterval);
   keepAliveInterval = setInterval(() => {
@@ -1200,12 +1244,26 @@ Implementation expectations for codeSnippet:
       cleanedText = cleanedText.trim();
     }
 
-    // Parse with a fallback sanitizer for bad escape sequences
+    // Parse with a fallback sanitizer for bad escape sequences and control characters
     try {
       return JSON.parse(cleanedText);
     } catch (e) {
-      const sanitized = cleanedText.replace(/\\(?!["\\/bfnrtu])/g, "\\\\");
-      return JSON.parse(sanitized);
+      // First, escape invalid backslashes
+      let sanitized = cleanedText.replace(/\\(?!["\\/bfnrtu])/g, "\\\\");
+      // Remove or escape control characters (ASCII 0-31) that are unescaped inside strings
+      // This regex replaces control chars (except \n, \r, \t which are valid when escaped)
+      sanitized = sanitized.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
+      // Replace literal newlines/tabs inside JSON strings with escaped versions
+      // We need to be careful to only do this inside string values
+      // A simpler approach: replace literal \n \r \t with escaped versions globally
+      // but only if they're causing issues
+      try {
+        return JSON.parse(sanitized);
+      } catch (e2) {
+        // More aggressive: remove all control characters
+        sanitized = sanitized.replace(/[\x00-\x1F]/g, " ");
+        return JSON.parse(sanitized);
+      }
     }
   } catch (error) {
     console.error('CAST: Error generating analytics strategy:', error);
@@ -1333,95 +1391,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
 
-  if (msg.type === "recommend-strategy") {
-    (async () => {
-      try {
-        // 1. Get API Key
-        const { geminiApiKey } = await chrome.storage.local.get("geminiApiKey");
-        if (!geminiApiKey) {
-          sendResponse({ error: "No API key found. Please configure it first." });
-          return;
-        }
-
-        // 2. Get DOM from active tab
-        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-        if (!tab || !tab.id) {
-          sendResponse({ error: "No active tab found." });
-          return;
-        }
-
-        // Retry mechanism for content script communication
-        let domResponse = null;
-        let retries = 0;
-        while (!domResponse && retries < 3) {
-          try {
-            domResponse = await chrome.tabs.sendMessage(tab.id, { type: "get-page-structure" });
-          } catch (e) {
-            console.log(`Content script not ready (attempt ${retries + 1}), injecting...`);
-            try {
-              await chrome.scripting.executeScript({
-                target: { tabId: tab.id },
-                files: ['content/crawler.js']
-              });
-              await sleep(500); // Wait for script to initialize
-            } catch (injectError) {
-              console.error("Failed to inject content script:", injectError);
-            }
-          }
-          retries++;
-        }
-
-        if (!domResponse || !domResponse.dom) {
-          sendResponse({ error: "Failed to retrieve page structure. Please refresh the page and try again." });
-          return;
-        }
-
-        // 3. Call Gemini
-        const strategy = await generateAnalyticsStrategy(geminiApiKey, domResponse.dom);
-        
-        // 4. Return results
-        sendResponse({ success: true, strategy });
-
-      } catch (error) {
-        console.error("Strategy generation failed:", error);
-        sendResponse({ error: error.message });
-      }
-    })();
-    return true; // Async response
-  }
-  
-  if (msg.type === "highlight-element") {
-    // Forward to content script
-    (async () => {
-        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-        if (tab && tab.id) {
-            // Use same retry/injection logic for highlighting
-            let retries = 0;
-            let success = false;
-            while (!success && retries < 3) {
-                try {
-                    await chrome.tabs.sendMessage(tab.id, { 
-                        type: "show-highlight", 
-                        selector: msg.selector, 
-                        label: msg.label 
-                    });
-                    success = true;
-                } catch (e) {
-                    try {
-                        await chrome.scripting.executeScript({
-                            target: { tabId: tab.id },
-                            files: ['content/crawler.js']
-                        });
-                        await sleep(500);
-                    } catch (err) {}
-                }
-                retries++;
-            }
-        }
-    })();
-    return false;
-  }
-
   if (msg.type === "crawl-start") {
     // Use provided depth or default to 2
     maxDepth = typeof msg.depth === 'number' && msg.depth >= 0 && msg.depth <= 5 
@@ -1450,6 +1419,155 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     stopKeepAlive();
     sendResponse({ cancelled: true });
     return false;
+  }
+
+  if (msg.type === "recommend-strategy-auto-cancel") {
+    autopilotCancelRequested = true;
+    sendResponse({ cancelled: true });
+    return false;
+  }
+
+  if (msg.type === "recommend-strategy-auto") {
+    (async () => {
+      autopilotCancelRequested = false;
+      try {
+        // 1. Get API Key
+        const { geminiApiKey } = await chrome.storage.local.get("geminiApiKey");
+        if (!geminiApiKey) {
+          sendResponse({ error: "No API key found. Please configure it first." });
+          return;
+        }
+
+        // 2. Get page limit from storage
+        const { pageLimit: storedLimit } = await chrome.storage.local.get("pageLimit");
+        const limit = storedLimit === "all" ? null : parseInt(storedLimit, 10) || 10;
+
+        // 3. Get unique URLs from the current session
+        const sessionId = await ensureCurrentSessionId();
+        if (!sessionId) {
+          sendResponse({ error: "No active session. Please run a crawl first." });
+          return;
+        }
+
+        const urlRecords = await getUniqueUrlsForSession(sessionId, limit);
+        if (!urlRecords || urlRecords.length === 0) {
+          sendResponse({ error: "No URLs found. Please run a crawl first to capture URLs." });
+          return;
+        }
+
+        const totalUrls = urlRecords.length;
+        const allRecommendations = [];
+
+        // 4. Iterate each URL
+        for (let i = 0; i < urlRecords.length; i++) {
+          if (autopilotCancelRequested) {
+            sendResponse({ cancelled: true, partial: allRecommendations, processed: i, total: totalUrls });
+            return;
+          }
+
+          const record = urlRecords[i];
+          const url = record.url;
+
+          // Send progress update
+          chrome.runtime.sendMessage({ 
+            type: "autopilot-progress", 
+            processed: i, 
+            total: totalUrls, 
+            currentUrl: url,
+            stage: `Processing ${i + 1}/${totalUrls}`
+          });
+
+          try {
+            // 4a. Navigate to URL
+            const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+            if (!tab || !tab.id) {
+              console.warn(`No active tab for URL ${url}, skipping.`);
+              continue;
+            }
+
+            // Navigate and wait for load
+            await chrome.tabs.update(tab.id, { url });
+            await new Promise((resolve) => {
+              const listener = (tabId, info) => {
+                if (tabId === tab.id && info.status === "complete") {
+                  chrome.tabs.onUpdated.removeListener(listener);
+                  resolve();
+                }
+              };
+              chrome.tabs.onUpdated.addListener(listener);
+              // Timeout after 30 seconds
+              setTimeout(() => {
+                chrome.tabs.onUpdated.removeListener(listener);
+                resolve();
+              }, 30000);
+            });
+
+            // Wait a bit for any JS to settle
+            await sleep(1000);
+
+            // 4b. Inject content script if needed and get DOM
+            let domResponse = null;
+            let retries = 0;
+            while (!domResponse && retries < 3) {
+              try {
+                domResponse = await chrome.tabs.sendMessage(tab.id, { type: "get-page-structure" });
+              } catch (e) {
+                console.log(`Content script not ready for ${url} (attempt ${retries + 1}), injecting...`);
+                try {
+                  await chrome.scripting.executeScript({
+                    target: { tabId: tab.id },
+                    files: ['content/crawler.js']
+                  });
+                  await sleep(500);
+                } catch (injectError) {
+                  console.error("Failed to inject content script:", injectError);
+                }
+              }
+              retries++;
+            }
+
+            if (!domResponse || !domResponse.dom) {
+              console.warn(`Failed to get DOM for ${url}, skipping.`);
+              continue;
+            }
+
+            // 4c. Generate strategy for this page
+            const strategy = await withTimeout(
+              generateAnalyticsStrategy(geminiApiKey, domResponse.dom),
+              90000, // 90 second timeout per page
+              `Strategy generation timeout for ${url}`
+            );
+
+            // 4d. Add URL to each recommendation and collect
+            if (strategy && strategy.recommendations) {
+              for (const rec of strategy.recommendations) {
+                allRecommendations.push({
+                  ...rec,
+                  pageUrl: url
+                });
+              }
+            }
+
+          } catch (urlError) {
+            console.error(`Error processing URL ${url}:`, urlError);
+            // Continue to next URL
+          }
+        }
+
+        // 5. Return aggregated results
+        sendResponse({ 
+          success: true, 
+          recommendations: allRecommendations,
+          processed: totalUrls,
+          total: totalUrls
+        });
+
+      } catch (error) {
+        console.error("Autopilot strategy failed:", error);
+        sendResponse({ error: error.message });
+      }
+    })();
+    return true; // Async response
   }
 
   if (msg.type === "get-db-stats") {

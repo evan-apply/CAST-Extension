@@ -19,10 +19,15 @@ const statTech = document.getElementById("statTech");
 const statAnalytics = document.getElementById("statAnalytics");
 const statUrls = document.getElementById("statUrls");
 const stopAIButton = document.getElementById("stopAI");
+const stopAutoButton = document.getElementById("stopAuto");
+const downloadAutoStrategyButton = document.getElementById("downloadStrategyAuto");
+const recommendStrategyAutoButton = document.getElementById("recommendStrategyAuto");
+let autoStrategyResults = [];
 let statusHideTimeout = null;
 
 let isAnalyzing = false;
 let statsInterval = null;
+let isAutoPilotRunning = false;
 
 function showStatus(message, durationMs = 8000) {
   if (!statusEl || !statusText) return;
@@ -153,6 +158,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   
   if (msg.type === "rag-progress") {
     updateProgressBar(msg.progress);
+  }
+
+  if (msg.type === "autopilot-progress") {
+    const { processed, total, currentUrl, stage } = msg;
+    const pct = total ? Math.round((processed / total) * 100) : 0;
+    showStatus(`Auto Pilot ${processed}/${total}: ${currentUrl || ""} (${pct}%)`, 0);
   }
   
   // Return false to indicate we're not sending an async response
@@ -518,6 +529,8 @@ document.getElementById("recommendStrategy").onclick = () => {
   });
 };
 
+// Auto Pilot click handler is defined later with timeout support
+
 document.getElementById("closeStrategy").onclick = () => {
   document.getElementById("strategyBox").style.display = "none";
 };
@@ -585,6 +598,55 @@ document.getElementById("downloadAnalytics").onclick = () => {
   });
 };
 
+if (downloadAutoStrategyButton) {
+  downloadAutoStrategyButton.onclick = () => {
+    if (!autoStrategyResults || !autoStrategyResults.length) return;
+    const rows = [
+      [
+        "Event Name",
+        "Trigger / When It Fires",
+        "Event Description (business meaning / purpose)",
+        "Parameters (list each param needed)",
+        "Parameter Description / Example Value",
+        "Platform",
+        "URL",
+        "Component / Selector",
+        "Data layer snippet"
+      ]
+    ];
+    autoStrategyResults.forEach(rec => {
+      // Format parameters - could be array or string
+      let params = rec.parameters || "";
+      if (Array.isArray(params)) {
+        params = params.map(p => typeof p === 'object' ? (p.name || JSON.stringify(p)) : p).join(", ");
+      }
+      // Format parameter descriptions - could be array or string
+      let paramDesc = rec.parameterDescription || "";
+      if (Array.isArray(rec.parameters)) {
+        paramDesc = rec.parameters.map(p => {
+          if (typeof p === 'object') {
+            return `${p.name || 'param'}: ${p.description || p.example || ''}`;
+          }
+          return String(p);
+        }).join("; ");
+      }
+      rows.push([
+        rec.eventName || "",
+        rec.trigger || rec.triggerValue || rec.triggerType || "",
+        rec.reasoning || rec.description || "",
+        params,
+        paramDesc,
+        rec.platform || "Web",
+        rec.url || rec.pageUrl || "",
+        rec.selector || "",
+        rec.codeSnippet || ""
+      ]);
+    });
+    downloadCSV("CAST_auto_pilot_strategy.csv", rows);
+    showStatus(`Auto strategy CSV downloaded (${autoStrategyResults.length} rows).`);
+  };
+}
+
 function handleAnalysisComplete() {
   isAnalyzing = false;
   progressBarWrapper.style.display = "none";
@@ -593,6 +655,12 @@ function handleAnalysisComplete() {
   if (stopAIButton) stopAIButton.style.display = "none";
   chrome.storage.local.remove(["CAST_ragProgress"]);
   refreshStats();
+}
+
+function resetAutoStrategyState() {
+  if (stopAutoButton) stopAutoButton.style.display = "none";
+  autoStrategyResults = [];
+  if (downloadAutoStrategyButton) downloadAutoStrategyButton.style.display = "none";
 }
 
 document.getElementById("runAI").onclick = () => {
@@ -660,3 +728,71 @@ if (stopAIButton) {
     });
   });
 }
+
+if (stopAutoButton) {
+  stopAutoButton.addEventListener("click", () => {
+    showStatus("Stopping Auto Pilot…", 0);
+    chrome.runtime.sendMessage({ type: "recommend-strategy-auto-cancel" }, () => {
+      isAutoPilotRunning = false;
+      resetAutoStrategyState();
+      showStatus("Auto Pilot stopped.");
+    });
+  });
+}
+
+// Auto Pilot: Recommend Strategy across unique URLs
+if (recommendStrategyAutoButton) {
+  let autopilotTimeoutId = null;
+
+  recommendStrategyAutoButton.onclick = () => {
+    showStatus("Auto Pilot: analyzing URLs for recommendations…", 0);
+    isAutoPilotRunning = true;
+    if (stopAutoButton) stopAutoButton.style.display = "block";
+    if (downloadStrategyAutoButton) downloadStrategyAutoButton.style.display = "none";
+    window.autopilotStrategy = [];
+
+    // Safety timeout: 3 minutes overall
+    if (autopilotTimeoutId) clearTimeout(autopilotTimeoutId);
+    autopilotTimeoutId = setTimeout(() => {
+      showStatus("Auto Pilot timed out. You can try again.");
+      isAutoPilotRunning = false;
+      if (stopAutoButton) stopAutoButton.style.display = "none";
+    }, 180000);
+
+    chrome.runtime.sendMessage({ type: "recommend-strategy-auto" }, (res) => {
+      if (autopilotTimeoutId) {
+        clearTimeout(autopilotTimeoutId);
+        autopilotTimeoutId = null;
+      }
+      isAutoPilotRunning = false;
+      if (stopAutoButton) stopAutoButton.style.display = "none";
+
+      if (!res) {
+        showStatus("No response from background for Auto Pilot.");
+        return;
+      }
+      if (res.error) {
+        showStatus("Auto Pilot Error: " + res.error);
+        return;
+      }
+      if (res.cancelled) {
+        showStatus("Auto Pilot cancelled.");
+        return;
+      }
+
+      // Response has { recommendations: [...], processed, total }
+      const recommendations = res.recommendations || [];
+      if (!recommendations.length) {
+        showStatus("Auto Pilot finished but found no recommendations.");
+        return;
+      }
+
+      // Store for CSV download
+      autoStrategyResults = recommendations;
+      if (downloadAutoStrategyButton) downloadAutoStrategyButton.style.display = "block";
+      showStatus(`Auto Pilot complete. ${recommendations.length} recommendations ready for download.`);
+    });
+  };
+}
+
+// downloadAutoStrategyButton handler defined earlier
