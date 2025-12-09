@@ -748,7 +748,7 @@ if (recommendStrategyAutoButton) {
     showStatus("Auto Pilot: analyzing URLs for recommendations…", 0);
     isAutoPilotRunning = true;
     if (stopAutoButton) stopAutoButton.style.display = "block";
-    if (downloadStrategyAutoButton) downloadStrategyAutoButton.style.display = "none";
+    if (downloadAutoStrategyButton) downloadAutoStrategyButton.style.display = "none";
     window.autopilotStrategy = [];
 
     // Safety timeout: 3 minutes overall
