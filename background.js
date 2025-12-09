@@ -1244,25 +1244,35 @@ Implementation expectations for codeSnippet:
       cleanedText = cleanedText.trim();
     }
 
+    const normalizeJson = (input) => {
+      let out = input;
+      // Escape invalid backslashes
+      out = out.replace(/\\(?!["\\/bfnrtu])/g, "\\\\");
+      // Strip control chars (except newline, tab, carriage return)
+      out = out.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
+      // Replace smart quotes with straight quotes
+      out = out.replace(/[\u201c\u201d]/g, '"').replace(/[\u2018\u2019]/g, "'");
+      // Remove trailing commas before } or ]
+      out = out.replace(/,(\s*[}\]])/g, "$1");
+      return out;
+    };
+
     // Parse with a fallback sanitizer for bad escape sequences and control characters
     try {
       return JSON.parse(cleanedText);
     } catch (e) {
-      // First, escape invalid backslashes
-      let sanitized = cleanedText.replace(/\\(?!["\\/bfnrtu])/g, "\\\\");
-      // Remove or escape control characters (ASCII 0-31) that are unescaped inside strings
-      // This regex replaces control chars (except \n, \r, \t which are valid when escaped)
-      sanitized = sanitized.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
-      // Replace literal newlines/tabs inside JSON strings with escaped versions
-      // We need to be careful to only do this inside string values
-      // A simpler approach: replace literal \n \r \t with escaped versions globally
-      // but only if they're causing issues
       try {
+        const sanitized = normalizeJson(cleanedText);
         return JSON.parse(sanitized);
       } catch (e2) {
-        // More aggressive: remove all control characters
-        sanitized = sanitized.replace(/[\x00-\x1F]/g, " ");
-        return JSON.parse(sanitized);
+        try {
+          // Last resort: remove all control chars and try again
+          const sanitized = normalizeJson(cleanedText).replace(/[\x00-\x1F]/g, " ");
+          return JSON.parse(sanitized);
+        } catch (finalErr) {
+          console.error("CAST: JSON parse failed after normalization", finalErr, cleanedText.slice(0, 2000));
+          throw finalErr;
+        }
       }
     }
   } catch (error) {
