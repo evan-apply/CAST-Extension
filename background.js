@@ -1531,12 +1531,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               continue;
             }
 
-            // 4c. Generate strategy for this page
-            const strategy = await withTimeout(
-              generateAnalyticsStrategy(geminiApiKey, domResponse.dom),
-              90000, // 90 second timeout per page
-              `Strategy generation timeout for ${url}`
-            );
+            // 4c. Generate strategy for this page with retry and longer timeout
+            let strategy = null;
+            let lastError = null;
+            const timeoutPlan = [120000, 60000]; // first attempt 120s, second 60s
+            for (let attempt = 0; attempt < timeoutPlan.length; attempt++) {
+              if (autopilotCancelRequested) break;
+              try {
+                strategy = await withTimeout(
+                  generateAnalyticsStrategy(geminiApiKey, domResponse.dom),
+                  timeoutPlan[attempt],
+                  `Strategy generation timeout for ${url} (attempt ${attempt + 1})`
+                );
+                break; // success
+              } catch (err) {
+                lastError = err;
+                console.warn(`Strategy attempt ${attempt + 1} failed for ${url}:`, err?.message || err);
+              }
+            }
+
+            if (!strategy) {
+              console.warn(`Skipping ${url} after retries due to strategy errors:`, lastError?.message || lastError);
+              chrome.runtime.sendMessage({
+                type: "autopilot-progress",
+                processed: i + 1,
+                total: totalUrls,
+                currentUrl: url,
+                stage: `Skipped ${url} (timeout)`
+              });
+              continue;
+            }
 
             // 4d. Add URL to each recommendation and collect
             if (strategy && strategy.recommendations) {
