@@ -1246,7 +1246,9 @@ Implementation expectations for codeSnippet:
 
     const normalizeJson = (input) => {
       let out = input;
-      // Escape invalid backslashes
+      // Convert stray backslash-newline combos into literal \n so JSON parse accepts them
+      out = out.replace(/\\\s*\r?\n/g, "\\n");
+      // Escape invalid backslashes (anything not a valid JSON escape)
       out = out.replace(/\\(?!["\\/bfnrtu])/g, "\\\\");
       // Strip control chars (except newline, tab, carriage return)
       out = out.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
@@ -1257,7 +1259,7 @@ Implementation expectations for codeSnippet:
       return out;
     };
 
-    // Parse with a fallback sanitizer for bad escape sequences and control characters
+    // Parse with layered fallbacks for malformed escapes/control chars
     try {
       return JSON.parse(cleanedText);
     } catch (e) {
@@ -1266,9 +1268,11 @@ Implementation expectations for codeSnippet:
         return JSON.parse(sanitized);
       } catch (e2) {
         try {
-          // Last resort: remove all control chars and try again
-          const sanitized = normalizeJson(cleanedText).replace(/[\x00-\x1F]/g, " ");
-          return JSON.parse(sanitized);
+          // Last resort: strip any remaining stray backslashes and control chars
+          const stripped = normalizeJson(cleanedText)
+            .replace(/\\(?!["\\/bfnrtu])/g, "")
+            .replace(/[\x00-\x1F]/g, " ");
+          return JSON.parse(stripped);
         } catch (finalErr) {
           console.error("CAST: JSON parse failed after normalization", finalErr, cleanedText.slice(0, 2000));
           throw finalErr;
