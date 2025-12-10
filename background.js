@@ -1122,13 +1122,13 @@ chrome.runtime.onConnect.addListener((port) => {
 // Generate analytics strategy recommendation
 async function generateAnalyticsStrategy(apiKey, domData) {
   const endpoint =
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" +
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent?key=" +
     encodeURIComponent(apiKey);
 
   const systemPrompt = `
-You are an expert in digital analytics, product strategy, user experience, and data architecture.
+You are an expert in digital analytics, and data architecture.
 
-Your job is to generate a complete analytics recommendation for a modern website or product, focusing ONLY on the "Recommend Strategy" output. Keep the JSON output schema the same:
+Your job is to generate a complete analytics recommendation for a modern website, focusing ONLY on the "Recommend Strategy" output. Keep the JSON output schema the same:
 {
   "recommendations": [
     {
