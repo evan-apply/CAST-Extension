@@ -597,7 +597,8 @@
   }
 
   // Highlight element(s) with overlay
-  function highlightElement(selector, label) {
+  function highlightElement(selector, label, options = {}) {
+    const showLabel = options.showLabel !== false;
     try {
       // Skip invalid/global selectors
       if (!selector || selector === 'window' || selector === 'document') {
@@ -624,6 +625,7 @@
           elements[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
 
+      let labelAttached = false;
       elements.forEach(el => {
           const rect = el.getBoundingClientRect();
           
@@ -637,28 +639,29 @@
           overlay.style.left = `${rect.left + window.scrollX}px`;
           overlay.style.width = `${rect.width}px`;
           overlay.style.height = `${rect.height}px`;
-          overlay.style.backgroundColor = 'rgba(52, 152, 219, 0.2)'; // Lighter Blue overlay
-          overlay.style.border = '2px solid #3498db';
-          overlay.style.zIndex = '10000';
+          overlay.style.backgroundColor = 'rgba(52, 152, 219, 0.08)'; // Softer overlay
+          overlay.style.border = '1px dashed #3498db';
+          overlay.style.zIndex = '9999';
           overlay.style.pointerEvents = 'none'; // Allow clicking through
           overlay.style.boxSizing = 'border-box';
           
           // Add label (only for the first element if it's a large group, or maybe all?)
-          // Let's add to all for clarity, but maybe small
-          if (label && label !== "batch") {
+          if (showLabel && label && label !== "batch" && !labelAttached) {
               const labelDiv = document.createElement('div');
               labelDiv.textContent = label;
               labelDiv.style.position = 'absolute';
-              labelDiv.style.top = '-20px'; // Slightly closer
+              labelDiv.style.top = '-16px'; // Slightly closer
               labelDiv.style.left = '0';
-              labelDiv.style.backgroundColor = '#3498db';
+              labelDiv.style.backgroundColor = '#1d4ed8';
               labelDiv.style.color = 'white';
-              labelDiv.style.padding = '1px 4px';
+              labelDiv.style.padding = '2px 6px';
               labelDiv.style.fontSize = '10px';
-              labelDiv.style.borderRadius = '3px';
+              labelDiv.style.borderRadius = '4px';
               labelDiv.style.whiteSpace = 'nowrap';
+              labelDiv.style.boxShadow = '0 2px 4px rgba(0,0,0,0.08)';
               labelDiv.style.zIndex = '10001';
               overlay.appendChild(labelDiv);
+              labelAttached = true;
           }
           
           document.body.appendChild(overlay);
@@ -672,10 +675,21 @@
   function highlightBatch(items) {
       // Clear existing
       document.querySelectorAll('.cast-strategy-overlay').forEach(el => el.remove());
-      
-      // Highlight all
-      items.forEach(item => {
-          highlightElement(item.selector, item.label);
+
+      // Deduplicate selectors and cap to avoid clutter
+      const seen = new Set();
+      const limited = [];
+      for (const item of items) {
+        if (!item || !item.selector) continue;
+        if (seen.has(item.selector)) continue;
+        seen.add(item.selector);
+        limited.push(item);
+        if (limited.length >= 40) break; // cap overlays to keep page readable
+      }
+
+      // Highlight all (labels only on first element per selector)
+      limited.forEach(item => {
+          highlightElement(item.selector, item.label, { showLabel: true });
       });
   }
 

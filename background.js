@@ -1183,7 +1183,7 @@ Apply this prompt when generating recommendations:
 Additional rules to fit our DOM and navigation detection:
 - Use navigation metadata when present: navigation.location ('header' | 'footer' | 'dropdown'), navigation.hasDropdown, navigation.parentNav, navigation.dropdownItems.
 - Track ALL header and footer navigation links, and ALL dropdown/popup menu items. Parents and children each get their own event.
-- Use select_content for navigation with parameters: navigation_location, navigation_parent (if dropdown), item_id or navigation.item_label, link_url.
+- DO NOT use select_content for navigation. Use navigation-specific events: navigation_click (or nav_item_click), navigation_menu_open, navigation_menu_close, navigation_section_impression where appropriate. Include parameters navigation.location, navigation.parent (if dropdown), navigation.item_label, navigation.link_url.
 - For forms: form_start, field interaction, generate_lead/sign_up submit success/failure with form_id, form_name, error/message when relevant.
 - For impressions: use IntersectionObserver-driven component impressions (content_block_impression) with component_id/component_type.
 - For search: search event with search_term; for filters/sorting: filter_interaction, sort_interaction.
