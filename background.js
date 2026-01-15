@@ -921,11 +921,15 @@ async function processBatchesDirect(apiKey, networkCalls, sessionId, progressCal
       }
 
       // Call Gemini with timeout safeguard to avoid hangs
+      // Using gemini-3-flash-preview (faster model) with 120s timeout for safety
       let result;
       try {
+        // Log batch info for debugging
+        console.log(`CAST: Processing batch ${i + 1}/${batches.length} - ${batch.length} calls, ~${Math.round(payloadTokens)} tokens`);
+        
         result = await withTimeout(
           callGemini(apiKey, payload),
-          60000,
+          120000, // 120s (2 minutes) timeout - should be sufficient for flash model
           `Gemini batch ${i + 1} timeout`
         );
       } catch (err) {
@@ -1905,18 +1909,69 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const needsProcessing = true; // FORCE processing to ensure we loop through data. deduplication handles the rest.
         
         if (needsProcessing) {
-          // Pre-filter network calls (remove static assets)
-          const staticAssetPattern = /\.(jpg|jpeg|png|gif|svg|webp|ico|woff|woff2|ttf|eot|css|js|map|pdf|zip|mp4|mp3|webm|ogg)(\?|$)/i;
+          // Get company domain from current tab or from network calls
+          let companyDomain = null;
+          let companyBaseDomain = null; // e.g., "applydigital.com" from "www.applydigital.com" or "app.applydigital.com"
+          
+          try {
+            const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+            if (tab && tab.url) {
+              const tabUrl = new URL(tab.url);
+              companyDomain = tabUrl.hostname.replace(/^www\./, ''); // Remove www. prefix
+              // Extract base domain (e.g., "applydigital.com" from "app.applydigital.com")
+              const parts = companyDomain.split('.');
+              if (parts.length >= 2) {
+                companyBaseDomain = parts.slice(-2).join('.'); // Last two parts
+              } else {
+                companyBaseDomain = companyDomain;
+              }
+            }
+          } catch (e) {
+            console.warn('Could not get company domain from tab, trying from network calls');
+            // Fallback: extract domain from first network call's pageUrl
+            if (networkCalls.length > 0 && networkCalls[0].pageUrl) {
+              try {
+                const pageUrl = new URL(networkCalls[0].pageUrl);
+                companyDomain = pageUrl.hostname.replace(/^www\./, '');
+                const parts = companyDomain.split('.');
+                if (parts.length >= 2) {
+                  companyBaseDomain = parts.slice(-2).join('.');
+                } else {
+                  companyBaseDomain = companyDomain;
+                }
+              } catch (e2) {
+                console.warn('Could not extract company domain from pageUrl');
+              }
+            }
+          }
+          
+          // Helper function to check if a host belongs to company domain
+          const isCompanyDomain = (host) => {
+            if (!companyBaseDomain) return false;
+            const hostDomain = host.replace(/^www\./, '').split(':')[0]; // Remove www. and port
+            // Check exact match or if host ends with company domain
+            return hostDomain === companyDomain || hostDomain === companyBaseDomain || hostDomain.endsWith('.' + companyBaseDomain);
+          };
+          
+          // Filter to ONLY analytics-related network calls AND exclude company domain
+          const analyticsPattern = /(google-analytics|analytics\.google|googletagmanager|gtag|gtm|segment|mixpanel|amplitude|hotjar|clarity|hubspot|adroll|facebook|meta|tiktok|linkedin|twitter|pinterest|reddit|quora|bing|microsoft|sentry|datadog|newrelic|fullstory|heap|pendo|optimizely|vwo|ab-tasty|doubleclick|googleadservices|googlesyndication)/i;
+          
           const filteredCalls = networkCalls.filter(call => {
             const url = call.url || '';
-            // Filter out static assets
-            if (staticAssetPattern.test(url)) {
+            const host = call.host || '';
+            const pathname = call.pathname || '';
+            
+            // Exclude calls to company domain (including subdomains)
+            if (isCompanyDomain(host)) {
               return false;
             }
-            return true; // Keep everything else
+            
+            // Only keep analytics-related requests (external domains)
+            return analyticsPattern.test(host) || analyticsPattern.test(pathname) || analyticsPattern.test(url);
           });
           
-          console.log(`CAST: Processing ${filteredCalls.length} network calls in batches`);
+          console.log(`CAST: Company domain: ${companyDomain || 'unknown'} (base: ${companyBaseDomain || 'unknown'})`);
+          console.log(`CAST: Filtered to ${filteredCalls.length} external analytics network calls (from ${networkCalls.length} total, excluding ${companyBaseDomain || 'company domain'})`);
           
           // Update progress
           chrome.storage.local.set({
@@ -2697,7 +2752,7 @@ async function collectNetworkCalls() {
 async function callGemini(apiKey, networkPayload, attempt = 1) {
   const MAX_RETRIES = 3;
   const endpoint =
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent?key=" +
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=" +
     encodeURIComponent(apiKey);
 
   const systemPrompt = `
@@ -2791,12 +2846,22 @@ Rules:
 - Return ONLY a single JSON object, no prose before or after.
 `.trim();
 
+  const payloadText = "\\n\\nSlim network payload JSON:\\n" + JSON.stringify(networkPayload, null, 2);
+  const payloadSize = payloadText.length;
+  const estimatedTokens = Math.ceil(payloadSize / 4);
+  
+  // Log payload info for debugging
+  console.log(`CAST: Calling Gemini API - Model: gemini-3-flash-preview, Payload size: ${payloadSize} chars (~${estimatedTokens} tokens)`);
+  if (networkPayload.pages) {
+    console.log(`CAST: Payload contains ${networkPayload.pages.length} pages with network requests`);
+  }
+  
   const body = {
     contents: [
       {
         parts: [
           { text: systemPrompt },
-          { text: "\\n\\nSlim network payload JSON:\\n" + JSON.stringify(networkPayload, null, 2) }
+          { text: payloadText }
         ]
       }
     ]
