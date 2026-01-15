@@ -1,6 +1,6 @@
 # CAST
 
-Current version: 3.4.0
+Current version: 3.5.0
 
 **CAST** (Crawl, Analyze, Summarize, Transform) is a powerful Chrome extension that captures website network traffic (via automated crawling or manual browsing) and uses AI to analyze and summarize the technology stack and analytics events.
 
@@ -166,5 +166,5 @@ Built with ❤️ by **Apply Digital**.
 
 ---
 
-**Version**: 3.3.0  
+**Version**: 3.5.0  
 **Last Updated**: Dec 2025
